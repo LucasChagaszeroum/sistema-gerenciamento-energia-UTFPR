@@ -136,7 +136,7 @@ class EnergyDatabase:
 # 2. ANÁLISE CIENTÍFICA, MACHINE LEARNING & ÁLGEBRA SIMBÓLICA
 # =========================================================================
 class EnergyAnalytics:
-    """Módulo responsável por estatística, previsão por IA e detecção de anomalias."""
+    """Módulo responsável por estatística, previsão por IA, anomalias e tarifação detalhada."""
 
     @staticmethod
     def analise_estatistica(df: pd.DataFrame) -> dict:
@@ -225,11 +225,13 @@ class EnergyAnalytics:
 
     @staticmethod
     def calcular_tarifacao_dupla(df: pd.DataFrame, tarifa_kwh: float) -> dict:
+        """Calcula tarifação industrial (hora, mês, ano) e residencial (médio, último, acumulado)."""
         if df.empty:
             return {}
 
         p_media_kw = float(df['demanda_kw'].mean())
 
+        # Perfil Industrial (Grupo A - Regime Operacional Contínuo em kW)
         consumo_ind_hora_kwh = p_media_kw * 1.0
         custo_ind_hora = consumo_ind_hora_kwh * tarifa_kwh
 
@@ -239,12 +241,30 @@ class EnergyAnalytics:
         consumo_ind_ano_kwh = p_media_kw * 24 * 365
         custo_ind_ano = consumo_ind_ano_kwh * tarifa_kwh
 
+        # Perfil Residencial (Grupo B - Registros Mensais em kWh)
+        consumo_res_media_kwh = float(df['demanda_kw'].mean())
+        custo_res_media_mes = consumo_res_media_kwh * tarifa_kwh
+
+        consumo_res_ultimo_kwh = float(df['demanda_kw'].iloc[-1])
+        custo_res_ultimo_mes = consumo_res_ultimo_kwh * tarifa_kwh
+
+        consumo_res_total_kwh = float(df['demanda_kw'].sum())
+        custo_res_total = consumo_res_total_kwh * tarifa_kwh
+
         return {
             "p_media_kw": p_media_kw,
+            "consumo_ind_hora_kwh": consumo_ind_hora_kwh,
             "custo_ind_hora": custo_ind_hora,
+            "consumo_ind_mes_kwh": consumo_ind_mes_kwh,
             "custo_ind_mes": custo_ind_mes,
+            "consumo_ind_ano_kwh": consumo_ind_ano_kwh,
             "custo_ind_ano": custo_ind_ano,
-            "consumo_ind_ano_kwh": consumo_ind_ano_kwh
+            "consumo_res_media_kwh": consumo_res_media_kwh,
+            "custo_res_media_mes": custo_res_media_mes,
+            "consumo_res_ultimo_kwh": consumo_res_ultimo_kwh,
+            "custo_res_ultimo_mes": custo_res_ultimo_mes,
+            "consumo_res_total_kwh": consumo_res_total_kwh,
+            "custo_res_total": custo_res_total
         }
 
 
@@ -487,24 +507,90 @@ elif menu_op == "Importar CSV/Excel":
             st.error(f"Erro no processamento: {e}")
 
 elif menu_op == "Gerenciar Registros":
-    st.subheader("⚙️ Visualização e Edição de Registros (CRUD)")
-    if not df.empty:
-        st.dataframe(df, use_container_width=True)
+    st.subheader("⚙️ Visualização, Edição e Análise Detalhada dos Registros")
+    
+    if df.empty:
+        st.info("Nenhum dado cadastrado para gerenciamento.")
+    else:
+        # Seletor dinâmico para modos de visualização no banco de dados
+        modo_visao = st.radio(
+            "Selecione o Modo de Visualização do Banco de Dados:",
+            ["Tabela Geral (CRUD)", "Registros Mensais (Residencial)", "Gastos por Hora (Industrial)"],
+            horizontal=True
+        )
         
-        col_ed, col_del = st.columns(2)
-        with col_ed:
-            id_edit = st.selectbox("ID para editar", df['id'].tolist())
-            novo_val = st.number_input("Novo Valor (kW)", min_value=0.0, step=0.1)
-            novo_fp = st.number_input("Novo FP", min_value=0.01, max_value=1.0, value=0.92, step=0.01)
-            if st.button("Atualizar"):
-                db.atualizar_leitura(id_edit, novo_val, novo_fp)
-                st.rerun()
+        st.divider()
 
-        with col_del:
-            id_del = st.selectbox("ID para remover", df['id'].tolist(), key="del_sel")
-            if st.button("Excluir", type="primary"):
-                db.deletar_leitura(id_del)
-                st.rerun()
+        if modo_visao == "Tabela Geral (CRUD)":
+            st.markdown("#### Banco de Dados Relacional Completo")
+            st.dataframe(df, use_container_width=True)
+
+            col_ed, col_del = st.columns(2)
+
+            with col_ed:
+                st.markdown("#### Editar Registro")
+                id_edit = st.selectbox("Selecione o ID para alterar", df['id'].tolist())
+                novo_val = st.number_input("Novo Valor de Demanda (kW)", min_value=0.0, step=0.1)
+                novo_fp = st.number_input("Novo Fator de Potência", min_value=0.01, max_value=1.0, value=0.92, step=0.01)
+                
+                if st.button("Atualizar Registro"):
+                    db.atualizar_leitura(id_edit, novo_val, novo_fp)
+                    st.success("Registro modificado com sucesso!")
+                    st.rerun()
+
+            with col_del:
+                st.markdown("#### Excluir Registro")
+                id_del = st.selectbox("Selecione o ID para remover", df['id'].tolist(), key="del_select")
+                if st.button("Remover Registro", type="primary"):
+                    db.deletar_leitura(id_del)
+                    st.warning("Registro excluído!")
+                    st.rerun()
+
+        elif modo_visao == "Registros Mensais (Residencial)":
+            st.markdown("#### 🏠 Análise de Registros Mensais (Perfil Residencial)")
+            st.caption("Cada registro é tratado como o consumo total acumulado de um mês em kWh.")
+            
+            # Cotação de tarifa base via scraper ou simulação
+            info_tarifa = TariffScraper.obter_cotacao_web()
+            t_ref = info_tarifa['tarifa_estimada_kwh']
+            
+            df_res = df.copy()
+            df_res['Consumo (kWh)'] = df_res['demanda_kw']
+            df_res['Fatura Estimada (R$)'] = df_res['Consumo (kWh)'] * t_ref
+            
+            st.dataframe(
+                df_res[['id', 'ponto', 'Consumo (kWh)', 'fator_potencia', 'data_hora', 'Fatura Estimada (R$)']],
+                use_container_width=True
+            )
+            
+            c_med, c_ult, c_tot = st.columns(3)
+            c_med.metric("Consumo Médio Mensal", f"{df_res['Consumo (kWh)'].mean():.2f} kWh", f"R$ {df_res['Fatura Estimada (R$)'].mean():.2f}/mês")
+            c_ult.metric("Última Fatura Cadastrada", f"{df_res['Consumo (kWh)'].iloc[-1]:.2f} kWh", f"R$ {df_res['Fatura Estimada (R$)'].iloc[-1]:.2f}")
+            c_tot.metric("Histórico Total Acumulado", f"{df_res['Consumo (kWh)'].sum():.2f} kWh", f"R$ {df_res['Fatura Estimada (R$)'].sum():.2f}")
+
+        elif modo_visao == "Gastos por Hora (Industrial)":
+            st.markdown("#### 🏭 Análise de Gastos Operacionais por Hora (Perfil Industrial)")
+            st.caption("Cada registro representa a demanda ativa (kW) mantida em operação contínua.")
+            
+            # Cotação de tarifa base via scraper ou simulação
+            info_tarifa = TariffScraper.obter_cotacao_web()
+            t_ref = info_tarifa['tarifa_estimada_kwh']
+            
+            df_ind = df.copy()
+            df_ind['Demanda (kW)'] = df_ind['demanda_kw']
+            df_ind['Custo / Hora (R$/h)'] = df_ind['Demanda (kW)'] * t_ref
+            df_ind['Custo / Mês (720h)'] = df_ind['Custo / Hora (R$/h)'] * 720
+            df_ind['Custo / Ano (8760h)'] = df_ind['Custo / Hora (R$/h)'] * 8760
+            
+            st.dataframe(
+                df_ind[['id', 'ponto', 'Demanda (kW)', 'fator_potencia', 'Custo / Hora (R$/h)', 'Custo / Mês (720h)', 'Custo / Ano (8760h)']],
+                use_container_width=True
+            )
+            
+            c_hr, c_mes, c_ano = st.columns(3)
+            c_hr.metric("Custo Médio Horário", f"R$ {df_ind['Custo / Hora (R$/h)'].mean():,.2f} / h")
+            c_mes.metric("Projeção Mensal Média (720h)", f"R$ {df_ind['Custo / Mês (720h)'].mean():,.2f} / mês")
+            c_ano.metric("Projeção Anual Média (8760h)", f"R$ {df_ind['Custo / Ano (8760h)'].mean():,.2f} / ano")
 
 elif menu_op == "Tarifação & Dados ANEEL":
     st.subheader("🏛️ Integração Tarifária Oficial (ANEEL e Mercado)")
@@ -528,13 +614,26 @@ elif menu_op == "Tarifação & Dados ANEEL":
     st.divider()
     
     if not df.empty:
-        # Cálculo dos custos com base na tarifa definida
-        custos = EnergyAnalytics.calcular_tarifacao_dupla(df, tarifa_aplicada)
+        # Obtenção dos cálculos consolidados da tarifação para ambos os perfis
+        res_tarifa = EnergyAnalytics.calcular_tarifacao_dupla(df, tarifa_aplicada)
         
-        # Exibição do título formatado com f-string sem erros sintáticos
         st.markdown(f"### Custos Operacionais Atualizados (Tarifa Base: R$ {tarifa_aplicada:.4f}/kWh)")
         
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Custo Horário", f"R$ {custos['custo_ind_hora']:,.2f}/h")
-        c2.metric("Projeção Mensal", f"R$ {custos['custo_ind_mes']:,.2f}/mês")
-        c3.metric("Projeção Anual", f"R$ {custos['custo_ind_ano']:,.2f}/ano")
+        col_ind, col_res = st.columns(2)
+        
+        with col_ind:
+            st.markdown("### 🏭 Perfil Industrial (Grupo A)")
+            st.caption("Operação baseada em Demanda Contínua em Regime de Carga (kW)")
+            st.metric("Demanda Média Operacional", f"{res_tarifa['p_media_kw']:.2f} kW")
+            st.metric("Custo Operacional por Hora", f"R$ {res_tarifa['custo_ind_hora']:,.2f} / h")
+            st.metric("Custo Operacional Mensal (720h)", f"R$ {res_tarifa['custo_ind_mes']:,.2f} / mês")
+            st.metric("Custo Operacional Anual (8760h)", f"R$ {res_tarifa['custo_ind_ano']:,.2f} / ano")
+            st.info(f"⚡ **Consumo Anual Estimado:** {res_tarifa['consumo_ind_ano_kwh']:,.0f} kWh/ano")
+
+        with col_res:
+            st.markdown("### 🏠 Perfil Residencial (Grupo B)")
+            st.caption("Análise baseada na sequência de faturas e histórico mensal em kWh")
+            st.metric("Consumo Médio Mensal", f"{res_tarifa['consumo_res_media_kwh']:.2f} kWh/mês")
+            st.metric("Fatura Mensal Média", f"R$ {res_tarifa['custo_res_media_mes']:,.2f} / mês")
+            st.metric("Última Fatura Cadastrada", f"R$ {res_tarifa['custo_res_ultimo_mes']:,.2f} ({res_tarifa['consumo_res_ultimo_kwh']:.0f} kWh)")
+            st.success(f"💡 **Histórico Acumulado ({len(df)} meses):** {res_tarifa['consumo_res_total_kwh']:.0f} kWh (R$ {res_tarifa['custo_res_total']:,.2f})")
