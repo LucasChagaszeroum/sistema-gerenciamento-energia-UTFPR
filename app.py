@@ -8,16 +8,16 @@ import numpy as np
 from scipy import stats
 import sympy as sp
 
-# Algoritmos de Aprendizado de Máquina (Previsão de Demanda e Anomalias)
+# Algoritmos de Aprendizado de Máquina para Análise Energética
 from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import IsolationForest
 
-# Bibliotecas para gráficos técnicos e interface web
+# Visualização de Dados e Interface Gráfica Interativa
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-# Módulos do ReportLab para geração de laudos formais em PDF
+# Módulos para Geração Automatizada de Relatórios Técnicos Formais em PDF
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
@@ -31,15 +31,15 @@ class EnergyDatabase:
     """Gerencia a persistência relacional, operações CRUD e importação de planilhas."""
     
     def __init__(self, db_name: str = "sistema_energia.db"):
-        self.db_name = db_name  # Define o nome do arquivo do banco SQLite
-        self._init_db()         # Garante a criação da tabela na inicialização
+        self.db_name = db_name  # Nome do arquivo de banco de dados SQLite local
+        self._init_db()         # Criação automática da tabela principal ao instanciar
 
     def _get_connection(self):
-        # Estabelece conexão com o banco de dados local SQLite
+        # Abre conexão segura com o banco SQLite local
         return sqlite3.connect(self.db_name)
 
     def _init_db(self):
-        # Cria a tabela principal de medições se ela ainda não existir
+        # Executa a DDL para estruturar a tabela de medições elétricas
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute('''
@@ -54,7 +54,7 @@ class EnergyDatabase:
             conn.commit()
 
     def inserir_leitura(self, ponto: str, demanda_kw: float, fator_potencia: float = 0.92, data_hora: str = None):
-        # Permite salvar leituras manuais indicando data/hora específica ou valor padrão
+        # Insere registros manuais tratando entrada opcional de data e hora
         with self._get_connection() as conn:
             cursor = conn.cursor()
             if data_hora:
@@ -70,13 +70,14 @@ class EnergyDatabase:
             conn.commit()
 
     def importar_dados_csv_excel(self, df_upload: pd.DataFrame) -> bool:
-        """Sanitiza colunas e insere medições em lote no banco SQLite."""
+        """Sanitiza nomes de colunas e insere medições em lote no SQLite."""
         df_upload.columns = [c.lower().strip() for c in df_upload.columns]
         
         if 'ponto' in df_upload.columns and 'demanda_kw' in df_upload.columns:
             if 'fator_potencia' not in df_upload.columns:
                 df_upload['fator_potencia'] = 0.92
 
+            # Conversão e saneamento de tipos numéricos
             df_upload['demanda_kw'] = pd.to_numeric(df_upload['demanda_kw'], errors='coerce')
             df_upload['fator_potencia'] = pd.to_numeric(df_upload['fator_potencia'], errors='coerce').fillna(0.92)
             
@@ -86,25 +87,24 @@ class EnergyDatabase:
             if 'data_hora' in df_upload.columns:
                 cols.append('data_hora')
 
+            # Inserção direta via Pandas no SQLite
             with self._get_connection() as conn:
                 df_upload[cols].to_sql('leituras', conn, if_exists='append', index=False)
             return True
         return False
 
     def carregar_dados_df(self) -> pd.DataFrame:
-        """Carrega medições do banco, converte timestamps e executa o triângulo de potências."""
+        """Lê os dados do banco e calcula vetorialmente o triângulo de potências."""
         with self._get_connection() as conn:
             query = "SELECT id, ponto, demanda_kw, fator_potencia, data_hora FROM leituras"
             df = pd.read_sql_query(query, conn)
         
         if not df.empty:
-            # Converte a coluna temporal para o tipo datetime do Pandas
+            # Tratamento da coluna temporal
             df['data_hora'] = pd.to_datetime(df['data_hora'], errors='coerce')
             
-            # S = P / FP (kVA) - Potência Aparente Vetorial
+            # Cálculos do Triângulo de Potências (S = P / FP, Q = sqrt(S^2 - P^2))
             df['potencia_aparente_kva'] = df['demanda_kw'] / df['fator_potencia']
-            
-            # Q = sqrt(S^2 - P^2) (kvar) - Potência Reativa Vetorial
             df['potencia_reativa_kvar'] = np.sqrt(
                 np.maximum(0, df['potencia_aparente_kva']**2 - df['demanda_kw']**2)
             )
@@ -115,6 +115,7 @@ class EnergyDatabase:
         return df
 
     def atualizar_leitura(self, id_registro: int, novo_valor_kw: float, novo_fp: float):
+        # Atualiza o registro por ID
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -124,6 +125,7 @@ class EnergyDatabase:
             conn.commit()
 
     def deletar_leitura(self, id_registro: int):
+        # Remove a leitura selecionada
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM leituras WHERE id = ?", (id_registro,))
@@ -164,57 +166,52 @@ class EnergyAnalytics:
 
     @staticmethod
     def prever_demanda_futura(df: pd.DataFrame, dias_previsao: int = 30) -> pd.DataFrame:
-        """Aplica Regressão Linear para projetar a tendência de consumo nos próximos N dias."""
+        """Modelagem preditiva temporal usando Regressão Linear do Scikit-Learn."""
         df_temp = df.dropna(subset=['data_hora']).sort_values('data_hora').copy()
         
         if len(df_temp) < 3:
-            return pd.DataFrame()  # Requer pelo menos 3 registros para ajuste de tendência
+            return pd.DataFrame()
 
-        # Converte datas em valores numéricos sequenciais (dias desde a primeira medição)
+        # Conversão de timestamps para dias contínuos
         data_minima = df_temp['data_hora'].min()
         df_temp['dias_num'] = (df_temp['data_hora'] - data_minima).dt.total_seconds() / (24 * 3600)
 
         X = df_temp[['dias_num']].values
         y = df_temp['demanda_kw'].values
 
-        # Treinamento do modelo de regressão linear do Scikit-Learn
+        # Ajuste do modelo de regressão linear
         modelo = LinearRegression()
         modelo.fit(X, y)
 
-        # Criação do vetor de tempo futuro para projeção
+        # Projeção temporal futura
         ultimo_dia_num = df_temp['dias_num'].max()
         dias_futuros = np.linspace(ultimo_dia_num + 1, ultimo_dia_num + dias_previsao, dias_previsao).reshape(-1, 1)
         predicoes_kw = modelo.predict(dias_futuros)
 
-        # Reconstrução das datas futuras para montagem da tabela e gráfico
         datas_futuras = [data_minima + pd.Timedelta(days=float(d[0])) for d in dias_futuros]
 
-        df_previsao = pd.DataFrame({
+        return pd.DataFrame({
             'data_hora': datas_futuras,
-            'demanda_prevista_kw': np.maximum(0, predicoes_kw)  # Evita demanda negativa em projeções
+            'demanda_prevista_kw': np.maximum(0, predicoes_kw)
         })
-        
-        return df_previsao
 
     @staticmethod
     def detectar_anomalias(df: pd.DataFrame, contaminacao: float = 0.05) -> pd.DataFrame:
-        """Utiliza Isolation Forest para identificar fugas de corrente e surtos operacionais fora do padrão."""
+        """Detecção não supervisionada de surtos de carga usando Isolation Forest."""
         df_anom = df.copy()
         if len(df_anom) < 5:
-            df_anom['anomalia'] = 1  # Retorna padrão normal se houver amostras insuficientes
+            df_anom['anomalia'] = 1
             return df_anom
 
         X = df_anom[['demanda_kw', 'fator_potencia']].values
-
-        # Inicializa o detector de anomalias com a taxa de contaminação estimada
         detector = IsolationForest(contamination=contaminacao, random_state=42)
         
-        # Predição: 1 representa padrão normal e -1 representa anomalia identificada
         df_anom['anomalia'] = detector.fit_predict(X)
         return df_anom
 
     @staticmethod
     def modelar_triangulo_potencias_simbolico() -> dict:
+        """Diferenciação simbólica com SymPy para equações de qualidade de energia."""
         P, FP = sp.symbols('P FP')
         S = P / FP
         Q = sp.sqrt(S**2 - P**2)
@@ -255,14 +252,11 @@ class EnergyAnalytics:
 # 3. SCRAPING E PARSER TARIFÁRIO DA ANEEL
 # =========================================================================
 class TariffScraper:
-    """Obtém e processa planilhas e dados tarifários oficiais da ANEEL."""
+    """Extração e processamento de dados tarifários oficiais."""
 
     @staticmethod
     def processar_planilha_aneel(df_aneel: pd.DataFrame) -> float:
-        """Extrai o valor médio da tarifa residencial B1 (R$/kWh) de uma planilha da ANEEL."""
         df_aneel.columns = [str(c).lower().strip() for c in df_aneel.columns]
-        
-        # Procura por colunas que contenham termos referentes a tarifa ou valor
         col_tarifa = [c for c in df_aneel.columns if 'vlr' in c or 'tarifa' in c or 'kwh' in c]
         
         if col_tarifa:
@@ -270,7 +264,7 @@ class TariffScraper:
             if not valores_validos.empty:
                 return float(valores_validos.mean())
         
-        return 0.75  # Retorna o valor de referência padrão em caso de ausência dos dados
+        return 0.75
 
     @staticmethod
     def obter_cotacao_web() -> dict:
@@ -292,7 +286,7 @@ class TariffScraper:
 # 4. AUTOMAÇÃO DE RELATÓRIOS PDF (ReportLab)
 # =========================================================================
 class PDFReportGenerator:
-    """Gera relatórios técnicos formais em PDF com diagnósticos do sistema."""
+    """Geração de laudos técnicos formais no formato PDF."""
 
     @staticmethod
     def gerar_relatorio_pdf(filename: str, estatisticas: dict, total_anomalias: int = 0) -> str:
@@ -329,8 +323,6 @@ class PDFReportGenerator:
         ]))
 
         story.append(tabela)
-        story.append(Spacer(1, 20))
-
         doc.build(story)
         return filename
 
@@ -360,9 +352,7 @@ menu_op = st.sidebar.selectbox(
 
 df = db.carregar_dados_df()
 
-# -------------------------------------------------------------------------
-# TELAS DO SISTEMA
-# -------------------------------------------------------------------------
+# --- LÓGICA DAS TELAS DO DASHBOARD ---
 if menu_op == "Dashboard & Analytics":
     st.subheader("📊 Painel Geral de Consumo e Detecção de Anomalias")
     
@@ -370,8 +360,6 @@ if menu_op == "Dashboard & Analytics":
         st.info("Nenhum dado cadastrado. Cadastre medições usando o menu lateral.")
     else:
         stats_data = EnergyAnalytics.analise_estatistica(df)
-        
-        # Processa a detecção automática de anomalias com Isolation Forest
         df_anomalia = EnergyAnalytics.detectar_anomalias(df)
         num_anomalias = (df_anomalia['anomalia'] == -1).sum()
 
@@ -392,8 +380,6 @@ if menu_op == "Dashboard & Analytics":
 
         with col_graf:
             st.markdown("### Monitoramento de Anomalias na Curva de Potência")
-            
-            # Adiciona identificação visual para anomalias detectadas
             df_anomalia['status'] = df_anomalia['anomalia'].map({1: 'Operação Normal', -1: 'Anomalia Detectada'})
             
             fig = px.scatter(
@@ -430,8 +416,6 @@ elif menu_op == "Análise Temporal & IA":
         st.warning("É necessário possuir registros cadastrados com data e hora para habilitar os módulos de inteligência temporal.")
     else:
         st.markdown("### 1. Histórico e Curva de Carga no Tempo")
-        
-        # Agrupamento e resampling temporal
         df_temporal = df.dropna(subset=['data_hora']).sort_values('data_hora')
         
         fig_temp = px.line(
@@ -453,23 +437,18 @@ elif menu_op == "Análise Temporal & IA":
         
         if not df_prev.empty:
             fig_prev = go.Figure()
-            
-            # Adiciona linha com dados históricos
             fig_prev.add_trace(go.Scatter(
                 x=df_temporal['data_hora'], y=df_temporal['demanda_kw'],
                 mode='lines+markers', name='Histórico Real', line=dict(color='#003366')
             ))
-            
-            # Adiciona linha com a projeção futura do modelo
             fig_prev.add_trace(go.Scatter(
                 x=df_prev['data_hora'], y=df_prev['demanda_prevista_kw'],
                 mode='lines+markers', name='Projeção IA', line=dict(color='#FF7F0E', dash='dash')
             ))
-            
             fig_prev.update_layout(title="Tendência e Previsão de Carga para os Próximos Dias", xaxis_title="Data", yaxis_title="Demanda (kW)")
             st.plotly_chart(fig_prev, use_container_width=True)
         else:
-            st.info("Cadastre pelo menos 3 leituras em datas distintas para habilitar a projeção por Inteligência Artificial.")
+            st.info("Cadastre pelo menos 3 leituras em datas distintas para habilitar a projeção por IA.")
 
 elif menu_op == "Inserir Leitura Única":
     st.subheader("➕ Novo Registro Manual de Demanda")
@@ -549,7 +528,10 @@ elif menu_op == "Tarifação & Dados ANEEL":
     st.divider()
     
     if not df.empty:
+        # Cálculo dos custos com base na tarifa definida
         custos = EnergyAnalytics.calcular_tarifacao_dupla(df, tarifa_aplicada)
+        
+        # Exibição do título formatado com f-string sem erros sintáticos
         st.markdown(f"### Custos Operacionais Atualizados (Tarifa Base: R$ {tarifa_aplicada:.4f}/kWh)")
         
         c1, c2, c3 = st.columns(3)
