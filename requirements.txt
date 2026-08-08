@@ -7,4 +7,5 @@ plotly
 requests
 beautifulsoup4
 reportlab
-#dependencias do projeto
+scikit-learn
+openpyxl
