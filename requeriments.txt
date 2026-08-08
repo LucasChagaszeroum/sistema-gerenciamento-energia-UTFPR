@@ -1,0 +1,10 @@
+streamlit
+pandas
+numpy
+scipy
+sympy
+plotly
+requests
+beautifulsoup4
+reportlab
+#dependencias do projeto
