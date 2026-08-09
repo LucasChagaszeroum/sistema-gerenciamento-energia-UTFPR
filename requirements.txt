@@ -1,35 +1,9 @@
-# Processamento de Dados e Matemática
-numpy>=1.22.0
-pandas>=1.4.0
-scipy>=1.8.0
-statsmodels>=0.13.0
-scikit-posthocs>=0.7.0
-joblib>=1.1.0
-
-# Machine Learning & Otimização
-scikit-learn>=1.0.0
-xgboost>=1.6.0
-lightgbm>=3.3.0
-catboost>=1.0.0
-optuna>=3.0.0
-
-# Deep Learning (PyTorch)
-torch>=1.12.0
-
-# XAI & Visualização
-shap>=0.40.0
-plotly>=5.0.0
-matplotlib>=3.5.0
-
-# Interface Web & MLOps
-streamlit>=1.18.0
-mlflow>=2.0.0
-
-# Banco de Dados & Conexão Relacional
-sqlalchemy>=1.4.0
-
-# Manipulação e OCR de Faturas (Módulo Residencial)
-pypdf>=3.0.0
-
-# Gerador de Relatórios Técnicos em PDF
-reportlab>=3.6.0
+streamlit
+pandas
+numpy
+requests
+scikit-learn
+matplotlib
+xgboost
+lightgbm
+fpdf2
