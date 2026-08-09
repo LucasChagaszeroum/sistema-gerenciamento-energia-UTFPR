@@ -1,30 +1,38 @@
+import sys
+import os
+
+# Adiciona o diretório raiz do projeto ao PYTHONPATH para evitar ModuleNotFoundError na nuvem
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
 import streamlit as st
 from data.database import DatabaseManager
 from ui.residential import render_residential_ui
 
-# Configuração da Página
+# Configuração global da página
 st.set_page_config(page_title="Plataforma de Inteligência Energética UTFPR", page_icon="⚡", layout="wide")
 
-# Inicializa Banco de Dados
+# Inicialização do banco de dados relacional
 db = DatabaseManager()
 
-# Session State para controle de navegação
+# Gerenciamento de estado de navegação (session_state)
 if 'perfil' not in st.session_state:
     st.session_state['perfil'] = None
 
-# Sidebar — Navegação Global
+# Barra lateral para controle global
 st.sidebar.title("⚡ Inteligência Energética")
 if st.sidebar.button("🏠 Página Inicial"):
     st.session_state['perfil'] = None
-    st.rerun()
+    st.rerun()  # Reinicia o fluxo do script para voltar à tela principal
 
-# ROUTING DE PERFIS
+# Resgate do perfil ativo
 perfil_atual = st.session_state['perfil']
 
+# Roteamento principal da aplicação
 if perfil_atual is None:
     st.title("⚡ Plataforma Integrada de Inteligência Energética — UTFPR")
     st.markdown("### Selecione o perfil de operação:")
 
+    # Divisão da tela principal em três colunas operacionais
     col1, col2, col3 = st.columns(3)
 
     with col1:
@@ -49,11 +57,12 @@ if perfil_atual is None:
             st.rerun()
 
 elif perfil_atual == "RESIDENCIAL":
+    # Renderização da interface residencial
     render_residential_ui(db)
 
 elif perfil_atual == "INDUSTRIAL":
     st.title("🏭 Módulo Industrial — Curva de Carga e Demanda")
-    st.info("Modulo Industrial pronto para integração com o pipeline avançado de Machine Learning.")
+    st.info("Módulo Industrial pronto para integração com o pipeline avançado de Machine Learning.")
 
 elif perfil_atual == "PESQUISA":
     st.title("🔬 Módulo de Pesquisa & Experimentos (Iniciação Científica)")
