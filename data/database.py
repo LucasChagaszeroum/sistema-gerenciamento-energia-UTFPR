@@ -3,19 +3,23 @@ import pandas as pd
 import numpy as np
 
 class DatabaseManager:
+    """
+    Gerenciador de banco de dados SQLite3 para o Sistema de Gerenciamento de Energia (UTFPR).
+    Gerencia tabelas de unidades consumidoras, faturas e medições de demanda elétrica.
+    """
     def __init__(self, db_path="sistema_energia_utfpr.db"):
         self.db_path = db_path
         self._init_db()
 
     def _init_db(self):
-        """Inicializa as tabelas do banco relacional SQLite3 com tratamento de erros."""
+        """Inicializa as tabelas do banco relacional com tratamento de chave estrangeira e seed de dados."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
-            # Habilita a checagem de chaves estrangeiras no SQLite
+            # Habilita o suporte a chaves estrangeiras (Foreign Keys) no SQLite3
             cursor.execute("PRAGMA foreign_keys = ON;")
 
-            # 1. Tabela de unidades consumidoras (Residencial / Industrial)
+            # 1. Tabela de Unidades Consumidoras (Residencial / Industrial)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS unidades (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -24,42 +28,42 @@ class DatabaseManager:
                 )
             """)
             
-            # 2. Tabela de faturas mensais
+            # 2. Tabela de Faturas Mensais de Energia
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS faturas (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    unidade_id INTEGER,
-                    mes_referencia TEXT,
-                    consumo_kwh REAL,
-                    valor_total REAL,
-                    FOREIGN KEY (unidade_id) REFERENCES unidades (id)
+                    unidade_id INTEGER NOT NULL,
+                    mes_referencia TEXT NOT NULL,
+                    consumo_kwh REAL NOT NULL,
+                    valor_total REAL NOT NULL,
+                    FOREIGN KEY (unidade_id) REFERENCES unidades (id) ON DELETE CASCADE
                 )
             """)
             
-            # 3. Tabela de medições de demanda e parâmetros elétricos
+            # 3. Tabela de Medições Industriais (Série Temporal de Demanda e Fator de Potência)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS medicoes_industriais (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    data_hora TEXT,
-                    demanda_kw REAL,
-                    fator_potencia REAL,
-                    temperatura REAL
+                    data_hora TEXT NOT NULL,
+                    demanda_kw REAL NOT NULL,
+                    fator_potencia REAL NOT NULL,
+                    temperatura REAL NOT NULL
                 )
             """)
             
-            # Garante que pelo menos uma unidade residencial exista
+            # Garante a existência da unidade residencial padrão 'casa 1'
             cursor.execute("SELECT id FROM unidades WHERE nome = 'casa 1'")
             unidade = cursor.fetchone()
             
             if not unidade:
                 cursor.execute("INSERT INTO unidades (nome, tipo) VALUES ('casa 1', 'RESIDENCIAL')")
-                conn.commit()  # Confirma a inserção para gerar o ID
+                conn.commit()  # Persiste a inserção para garantir a geração do ID
                 cursor.execute("SELECT id FROM unidades WHERE nome = 'casa 1'")
                 unidade = cursor.fetchone()
 
             unid_id = unidade[0]
 
-            # Insere dados de faturas iniciais apenas se a tabela faturas estiver vazia
+            # Popula histórico simulado de faturas se a tabela estiver vazia
             cursor.execute("SELECT COUNT(*) FROM faturas")
             if cursor.fetchone()[0] == 0:
                 faturas_demo = [
