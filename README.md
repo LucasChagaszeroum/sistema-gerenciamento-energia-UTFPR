@@ -1,151 +1,48 @@
-# ⚡ Sistema Integrado de Gerenciamento de Energia — IC UTFPR
+# ⚡ Plataforma Integrada de Inteligência Energética (UTFPR)
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.28%2B-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
-[![SQLite](https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-
-Aplicação web interativa desenvolvida em **Python** para monitoramento de demanda elétrica, cálculo de vetores de potência, auditoria de conformidade regulatória (normativa da ANEEL) e automação de laudos técnicos em PDF.
-
-Este projeto faz parte da pesquisa de **Iniciação Científica na UTFPR (Universidade Tecnológica Federal do Paraná)**, focada no desenvolvimento de ferramentas computacionais aplicadas à gestão e eficiência energética.
+Plataforma avançada de previsão de carga elétrica, monitoramento estatístico de estabilidade de dados e explicabilidade de modelos (XAI), desenvolvida para aplicações em sistemas de energia elétrica na **Universidade Tecnológica Federal do Paraná (UTFPR)**.
 
 ---
 
-## 📌 Funcionalidades Principais
+## 🚀 Funcionalidades do Sistema
 
-- **📊 Dashboard & Analytics em Tempo Real:**
-  - Métricas dinâmicas de Demanda Média, Demanda Máxima, Fator de Carga ($FC$) e Fator de Potência ($FP$).
-  - Alerta regulatório automatizado para instalações com $FP < 0{,}92$ (passíveis de ajuste/penalização por reativos).
-  - Gráfico interativo em **Plotly** para comparação entre Potência Ativa ($kW$) e Reativa ($kvar$).
+1. **Benchmarking e Validação Cruzada Aninhada (Nested CV):**
+   - Combinação de modelos de Machine Learning (XGBoost, LightGBM, CatBoost e Random Forest) via Ensemble com pesos ponderados por Softmax Negativo.
+   - Otimização de hiperparâmetros automatizada com **Optuna** (incluindo *Pruning* e busca paralela).
+   - Validação estatística de desempenho utilizando o **Teste de Diebold-Mariano** e tamanho de efeito (*Cohen's d*).
 
-- **🧮 Modelagem Matemática e Álgebra Simbólica:**
-  - Integração com a biblioteca **SymPy** para cálculo analítico do triângulo de potências e taxa de variação/sensibilidade reativa ($\frac{dQ}{dFP}$).
+2. **Deep Learning Temporal:**
+   - Implementação de arquitetura baseada em **Transformer Encoder** com atenção multi-head e máscara causal em PyTorch, suportando *Automatic Mixed Precision (AMP)*.
 
-- **💾 Gestão de Dados (CRUD e Ingestão em Lote):**
-  - Registro manual único de medições via formulário.
-  - Ingestão massiva em lote a partir de ficheiros `.csv` ou `.xlsx` (Pandas).
-  - Persistência e gerenciamento de leituras num banco de dados relacional **SQLite3**.
+3. **Previsão Probabilística:**
+   - Quantilagem preditiva ($P_5, P_{50}, P_{95}$) avaliada por meio de *Pinball Loss* e probabilidade de cobertura de intervalo (*PICP*).
 
-- **📑 Automação de Laudos Técnicos:**
-  - Geração automática de relatórios em PDF padronizados via **ReportLab** para documentação de auditoria energética.
+4. **Inteligência Artificial Explicável (XAI):**
+   - Gráficos de dependência parcial (*PDP*) e análise de importância de atributos para interpretabilidade operacional.
 
-- **🌐 Módulo de Tarifação (Web Scraping):**
-  - Consulta tarifária com mecanismo de *fallback* para estimativa de custos operacionais mensais.
+5. **Monitoramento de Concept & Data Drift:**
+   - Cálculo automatizado do **Population Stability Index (PSI)** e monitoramento adaptativo de janelas (*ADWIN*).
 
----
-
-## 🛠️ Tecnologias e Bibliotecas Utilizadas
-
-| Camada / Módulo | Tecnologia / Biblioteca | Função no Sistema |
-| :--- | :--- | :--- |
-| **Interface Web** | `Streamlit` | Frontend reativo e interativo |
-| **Banco de Dados** | `SQLite3` | Armazenamento relacional local |
-| **Processamento de Dados** | `Pandas` & `NumPy` | Manipulação vetorial e cálculos de $S$ (kVA) e $Q$ (kvar) |
-| **Estatística & Álgebra** | `SciPy` & `SymPy` | Intervalos de confiança e diferenciação simbólica |
-| **Visualização de Dados** | `Plotly Express` / `Graph Objects` | Gráficos técnicos interativos |
-| **Relatórios** | `ReportLab` | Geração de PDFs formais em código |
-| **Coleta de Dados** | `BeautifulSoup4` & `Requests` | Web scraping de dados tarifários |
+6. **Interface Web Interativa & MLOps:**
+   - Dashboard completo construído em **Streamlit**.
+   - Persistência relacional utilizando **SQLAlchemy** (SQLite/PostgreSQL) e rastreamento de experimentos com **MLflow**.
 
 ---
 
-## 📐 Equações e Modelagem Elétrica
+## 🛠️ Tecnologias Utilizadas
 
-O backend efetua a decomposição das grandezas elétricas através do triângulo de potências:
-
-1. **Potência Aparente ($S$):**
-   $$S = \frac{P}{FP} \quad \text{[kVA]}$$
-
-2. **Potência Reativa ($Q$):**
-   $$Q = \sqrt{S^2 - P^2} = \sqrt{\left(\frac{P}{FP}\right)^2 - P^2} \quad \text{[kvar]}$$
-
-3. **Fator de Carga ($FC$):**
-   $$FC = \frac{P_{\text{média}}}{P_{\text{máxima}}}$$
+* **Linguagem:** Python 3.10+
+* **Machine Learning & Otimização:** Scikit-Learn, XGBoost, LightGBM, CatBoost, Optuna
+* **Deep Learning:** PyTorch
+* **Estatística & Métricas:** SciPy, Statsmodels, Scikit-Posthocs
+* **Interface & Visualização:** Streamlit, Plotly, Matplotlib, Seaborn
+* **Banco de Dados & MLOps:** SQLAlchemy, MLflow, Docker, GitHub Actions
 
 ---
 
-## 🚀 Como Executar o Projeto Localmente
+## ⚙️ Como Executar o Projeto Localmente
 
-### Pré-requisitos
-- **Python 3.10** ou superior instalado na máquina.
-
-### Passo a Passo
-
-1. **Clonar o Repositório:**
+1. **Clone o repositório:**
    ```bash
-   git clone [https://github.com/teu-usuario/seu-repositorio.git](https://github.com/teu-usuario/seu-repositorio.git)
-   cd seu-repositorio# ⚡ Sistema Integrado de Gerenciamento de Energia — IC UTFPR
-
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.28%2B-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
-[![SQLite](https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-
-Aplicação web interativa desenvolvida em **Python** para monitoramento de demanda elétrica, cálculo de vetores de potência, auditoria de conformidade regulatória (normativa da ANEEL) e automação de laudos técnicos em PDF.
-
-Este projeto faz parte da pesquisa de **Iniciação Científica na UTFPR (Universidade Tecnológica Federal do Paraná)**, focada no desenvolvimento de ferramentas computacionais aplicadas à gestão e eficiência energética.
-
----
-
-## 📌 Funcionalidades Principais
-
-- **📊 Dashboard & Analytics em Tempo Real:**
-  - Métricas dinâmicas de Demanda Média, Demanda Máxima, Fator de Carga ($FC$) e Fator de Potência ($FP$).
-  - Alerta regulatório automatizado para instalações com $FP < 0{,}92$ (passíveis de ajuste/penalização por reativos).
-  - Gráfico interativo em **Plotly** para comparação entre Potência Ativa ($kW$) e Reativa ($kvar$).
-
-- **🧮 Modelagem Matemática e Álgebra Simbólica:**
-  - Integração com a biblioteca **SymPy** para cálculo analítico do triângulo de potências e taxa de variação/sensibilidade reativa ($\frac{dQ}{dFP}$).
-
-- **💾 Gestão de Dados (CRUD e Ingestão em Lote):**
-  - Registro manual único de medições via formulário.
-  - Ingestão massiva em lote a partir de ficheiros `.csv` ou `.xlsx` (Pandas).
-  - Persistência e gerenciamento de leituras num banco de dados relacional **SQLite3**.
-
-- **📑 Automação de Laudos Técnicos:**
-  - Geração automática de relatórios em PDF padronizados via **ReportLab** para documentação de auditoria energética.
-
-- **🌐 Módulo de Tarifação (Web Scraping):**
-  - Consulta tarifária com mecanismo de *fallback* para estimativa de custos operacionais mensais.
-
----
-
-## 🛠️ Tecnologias e Bibliotecas Utilizadas
-
-| Camada / Módulo | Tecnologia / Biblioteca | Função no Sistema |
-| :--- | :--- | :--- |
-| **Interface Web** | `Streamlit` | Frontend reativo e interativo |
-| **Banco de Dados** | `SQLite3` | Armazenamento relacional local |
-| **Processamento de Dados** | `Pandas` & `NumPy` | Manipulação vetorial e cálculos de $S$ (kVA) e $Q$ (kvar) |
-| **Estatística & Álgebra** | `SciPy` & `SymPy` | Intervalos de confiança e diferenciação simbólica |
-| **Visualização de Dados** | `Plotly Express` / `Graph Objects` | Gráficos técnicos interativos |
-| **Relatórios** | `ReportLab` | Geração de PDFs formais em código |
-| **Coleta de Dados** | `BeautifulSoup4` & `Requests` | Web scraping de dados tarifários |
-
----
-
-## 📐 Equações e Modelagem Elétrica
-
-O backend efetua a decomposição das grandezas elétricas através do triângulo de potências:
-
-1. **Potência Aparente ($S$):**
-   $$S = \frac{P}{FP} \quad \text{[kVA]}$$
-
-2. **Potência Reativa ($Q$):**
-   $$Q = \sqrt{S^2 - P^2} = \sqrt{\left(\frac{P}{FP}\right)^2 - P^2} \quad \text{[kvar]}$$
-
-3. **Fator de Carga ($FC$):**
-   $$FC = \frac{P_{\text{média}}}{P_{\text{máxima}}}$$
-
----
-
-## 🚀 Como Executar o Projeto Localmente
-
-### Pré-requisitos
-- **Python 3.10** ou superior instalado na máquina.
-
-### Passo a Passo
-
-1. **Clonar o Repositório:**
-   ```bash
-   git clone [https://github.com/teu-usuario/seu-repositorio.git](https://github.com/teu-usuario/seu-repositorio.git)
+   git clone [https://github.com/seu-usuario/seu-repositorio.git](https://github.com/seu-usuario/seu-repositorio.git)
    cd seu-repositorio

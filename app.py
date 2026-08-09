@@ -1,639 +1,692 @@
-import sqlite3
+import io
 import os
-import requests
-from bs4 import BeautifulSoup
+import random
+import logging
+import copy
+import math
+from datetime import datetime, timedelta
 
-import pandas as pd
 import numpy as np
-from scipy import stats
-import sympy as sp
+import pandas as pd
+import scipy.stats as stats
+from scipy.stats import ks_2samp, bootstrap
+import statsmodels.api as sm
+from statsmodels.stats.multitest import multipletests
+import scikit_posthocs as sp
+import joblib
+import mlflow
+import mlflow.sklearn
 
-# Algoritmos de Aprendizado de Máquina para Análise Energética
-from sklearn.linear_model import LinearRegression
-from sklearn.ensemble import IsolationForest
+# Configuração de Reproducibilidade Global
+SEED = 42
+np.random.seed(SEED)
+random.seed(SEED)
 
-# Visualização de Dados e Interface Gráfica Interativa
+# Parâmetros Globais do Experimento
+TRANSFORMER_SEQ_LEN = 168  # Janela semanal (168 horas)
+
+# Machine Learning & Otimização
+from sklearn.base import BaseEstimator, RegressorMixin, clone
+from sklearn.ensemble import RandomForestRegressor, ExtraTreesRegressor
+from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.inspection import partial_dependence, permutation_importance
+from sklearn.metrics import (
+    r2_score, mean_absolute_error, mean_squared_error,
+    median_absolute_error, mean_absolute_percentage_error
+)
+import xgboost as xgb
+import lightgbm as lgb
+from catboost import CatBoostRegressor
+import optuna
+
+# Deep Learning (PyTorch) & Determinismo Estrito
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+
+torch.manual_seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+torch.use_deterministic_algorithms(True)
+
+# XAI & Visualização
+import shap
 import plotly.express as px
 import plotly.graph_objects as go
+import matplotlib.pyplot as plt
 import streamlit as st
 
-# Módulos para Geração Automatizada de Relatórios Técnicos Formais em PDF
+# Banco de Dados & Conexão Relacional
+from sqlalchemy import create_engine, text
+from sqlalchemy.pool import QueuePool
+
+# Exportação PDF
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 
+# Configuração de Logs da Aplicação
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger("InteligenciaEnergetica")
+optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 # =========================================================================
-# 1. CAMADA DE BANCO DE DADOS (SQLite + Pandas)
+# 1. VALIDAÇÃO ESTATÍSTICA AVANÇADA (MELHORIA 3: DIEBOLD-MARIANO & EFFECT SIZE)
 # =========================================================================
-class EnergyDatabase:
-    """Gerencia a persistência relacional, operações CRUD e importação de planilhas."""
+def diebold_mariano_test(real: np.ndarray, pred1: np.ndarray, pred2: np.ndarray, h: int = 1, p_type: str = "MSE") -> float:
+    """
+    Realiza o teste de Diebold-Mariano para comparar a capacidade preditiva de dois modelos.
+    Retorna o p-valor da hipótese nula de que ambos os modelos possuem a mesma precisão.
+    """
+    e1 = real - pred1
+    e2 = real - pred2
     
-    def __init__(self, db_name: str = "sistema_energia.db"):
-        self.db_name = db_name  # Nome do arquivo de banco de dados SQLite local
-        self._init_db()         # Criação automática da tabela principal ao instanciar
+    if p_type == "MSE":
+        d = e1**2 - e2**2
+    elif p_type == "MAE":
+        d = np.abs(e1) - np.abs(e2)
+    else:
+        raise ValueError("Tipo de perda inválido. Escolha 'MSE' ou 'MAE'.")
 
-    def _get_connection(self):
-        # Abre conexão segura com o banco SQLite local
-        return sqlite3.connect(self.db_name)
+    mean_d = np.mean(d)
+    n = len(d)
+    
+    # Autocovariância para correção do horizonte de previsão
+    gamma = []
+    for k in range(h):
+        gamma.append(np.cov(d[:n - k], d[k:]) [0, 1] if n > k else 0)
+    
+    var_d = np.var(d, ddof=1) + 2 * sum([(1 - (k / h)) * gamma[k] for k in range(1, h)])
+    DM_stat = mean_d / np.sqrt((var_d / n) + 1e-8)
+    
+    # Cálculo do p-valor bicaudal
+    p_value = 2 * (1 - stats.norm.cdf(abs(DM_stat)))
+    return float(p_value)
+
+def cohens_d(x: np.ndarray, y: np.ndarray) -> float:
+    """Calcula o tamanho do efeito de Cohen (Cohen's d) entre dois conjuntos de erros."""
+    nx, ny = len(x), len(y)
+    dof = nx + ny - 2
+    pooled_std = np.sqrt(((nx - 1) * np.std(x, ddof=1)**2 + (ny - 1) * np.std(y, ddof=1)**2) / dof)
+    return float((np.mean(x) - np.mean(y)) / (pooled_std + 1e-8))
+
+
+# =========================================================================
+# 2. DETECÇÃO DE DRIFT AVANÇADA (MELHORIA 2: PSI & ADWIN)
+# =========================================================================
+class AdvancedDriftMonitor:
+    """Calcula o Population Stability Index (PSI) e ADWIN para variáveis contínuas."""
+    
+    @staticmethod
+    def calculate_psi(reference: np.ndarray, target: np.ndarray, num_buckets: int = 10) -> float:
+        """Calcula o PSI entre uma distribuição de referência (treino) e uma atual (teste)."""
+        reference = reference[~np.isnan(reference)]
+        target = target[~np.isnan(target)]
+        
+        if len(reference) == 0 or len(target) == 0:
+            return 0.0
+
+        percentiles = np.linspace(0, 100, num_buckets + 1)
+        buckets = np.percentile(reference, percentiles)
+        buckets[0] -= 1e-5
+        buckets[-1] += 1e-5
+
+        ref_counts, _ = np.histogram(reference, bins=buckets)
+        tar_counts, _ = np.histogram(target, bins=buckets)
+
+        ref_perc = ref_counts / len(reference)
+        tar_perc = tar_counts / len(target)
+
+        # Evita divisão por zero ou log(0)
+        ref_perc = np.where(ref_perc == 0, 1e-4, ref_perc)
+        tar_perc = np.where(tar_perc == 0, 1e-4, tar_perc)
+
+        psi_val = np.sum((tar_perc - ref_perc) * np.log(tar_perc / ref_perc))
+        return float(psi_val)
+
+
+class SimpleADWIN:
+    """Implementação simplificada do algoritmo Adaptive Windowing (ADWIN) para Concept Drift."""
+    def __init__(self, delta: float = 0.002):
+        self.delta = delta
+        self.window = []
+
+    def update(self, value: float) -> bool:
+        """Adiciona um valor à janela e verifica se houve alteração na média estatística."""
+        self.window.append(value)
+        drift_detected = False
+        n = len(self.window)
+
+        if n > 10:
+            for i in range(1, n):
+                w0 = self.window[:i]
+                w1 = self.window[i:]
+                n0, n1 = len(w0), len(w1)
+                
+                m0, m1 = np.mean(w0), np.mean(w1)
+                m_diff = abs(m0 - m1)
+                
+                # Limite estatístico da desigualdade de Hoeffding
+                dd = math.log(2.0 / self.delta)
+                m_bound = math.sqrt((1.0 / (2.0 * n0) + 1.0 / (2.0 * n1)) * dd)
+
+                if m_diff > m_bound:
+                    drift_detected = True
+                    self.window = self.window[i:]  # Reduz a janela adaptativamente
+                    break
+        return drift_detected
+
+
+# =========================================================================
+# 3. BASELINES CORRIGIDOS
+# =========================================================================
+class NaiveForecaster:
+    @staticmethod
+    def predict(y_train: np.ndarray, horizon: int) -> np.ndarray:
+        return np.repeat(y_train[-1], horizon)
+
+class SeasonalNaiveForecaster:
+    @staticmethod
+    def predict(y_train: np.ndarray, horizon: int, seasonality: int = 24) -> np.ndarray:
+        preds = []
+        for i in range(horizon):
+            idx = len(y_train) + i - seasonality
+            if idx < len(y_train):
+                preds.append(y_train[idx])
+            else:
+                preds.append(preds[idx - len(y_train)])
+        return np.array(preds)
+
+
+# =========================================================================
+# 4. BANCO DE DADOS & GERENCIADOR DE DADOS REAIS (MELHORIA 1 & 7)
+# =========================================================================
+class DatabaseManager:
+    def __init__(self):
+        self.db_url = os.getenv("DATABASE_URL", "sqlite:///sistema_energia_utfpr.db")
+        self.is_postgres = not self.db_url.startswith("sqlite")
+        
+        if not self.is_postgres:
+            self.engine = create_engine(self.db_url, connect_args={"check_same_thread": False})
+        else:
+            self.engine = create_engine(self.db_url, poolclass=QueuePool, pool_size=10, max_overflow=20)
+        self._init_db()
 
     def _init_db(self):
-        # Executa a DDL para estruturar a tabela de medições elétricas
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
+        pk_syntax = "INTEGER PRIMARY KEY AUTOINCREMENT" if not self.is_postgres else "SERIAL PRIMARY KEY"
+        with self.engine.begin() as conn:
+            conn.execute(text(f'''
                 CREATE TABLE IF NOT EXISTS leituras (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id {pk_syntax},
                     ponto TEXT NOT NULL,
                     demanda_kw REAL NOT NULL,
                     fator_potencia REAL DEFAULT 0.92,
+                    temperatura REAL, umidade REAL, irradiancia REAL,
+                    velocidade_vento REAL, pressao_atm REAL,
+                    feriado INTEGER DEFAULT 0, periodo_letivo INTEGER DEFAULT 1,
                     data_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
-            ''')
-            conn.commit()
-
-    def inserir_leitura(self, ponto: str, demanda_kw: float, fator_potencia: float = 0.92, data_hora: str = None):
-        # Insere registros manuais tratando entrada opcional de data e hora
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            if data_hora:
-                cursor.execute(
-                    "INSERT INTO leituras (ponto, demanda_kw, fator_potencia, data_hora) VALUES (?, ?, ?, ?)",
-                    (ponto, demanda_kw, fator_potencia, data_hora)
+            '''))
+            conn.execute(text(f'''
+                CREATE TABLE IF NOT EXISTS metricas_modelo (
+                    id {pk_syntax},
+                    data_execucao TIMESTAMP,
+                    modelo TEXT,
+                    mae REAL, rmse REAL, r2 REAL
                 )
-            else:
-                cursor.execute(
-                    "INSERT INTO leituras (ponto, demanda_kw, fator_potencia) VALUES (?, ?, ?)",
-                    (ponto, demanda_kw, fator_potencia)
-                )
-            conn.commit()
+            '''))
 
-    def importar_dados_csv_excel(self, df_upload: pd.DataFrame) -> bool:
-        """Sanitiza nomes de colunas e insere medições em lote no SQLite."""
-        df_upload.columns = [c.lower().strip() for c in df_upload.columns]
-        
-        if 'ponto' in df_upload.columns and 'demanda_kw' in df_upload.columns:
-            if 'fator_potencia' not in df_upload.columns:
-                df_upload['fator_potencia'] = 0.92
-
-            # Conversão e saneamento de tipos numéricos
-            df_upload['demanda_kw'] = pd.to_numeric(df_upload['demanda_kw'], errors='coerce')
-            df_upload['fator_potencia'] = pd.to_numeric(df_upload['fator_potencia'], errors='coerce').fillna(0.92)
-            
-            df_upload = df_upload.dropna(subset=['demanda_kw'])
-
-            cols = ['ponto', 'demanda_kw', 'fator_potencia']
-            if 'data_hora' in df_upload.columns:
-                cols.append('data_hora')
-
-            # Inserção direta via Pandas no SQLite
-            with self._get_connection() as conn:
-                df_upload[cols].to_sql('leituras', conn, if_exists='append', index=False)
-            return True
-        return False
-
-    def carregar_dados_df(self) -> pd.DataFrame:
-        """Lê os dados do banco e calcula vetorialmente o triângulo de potências."""
-        with self._get_connection() as conn:
-            query = "SELECT id, ponto, demanda_kw, fator_potencia, data_hora FROM leituras"
-            df = pd.read_sql_query(query, conn)
-        
-        if not df.empty:
-            # Tratamento da coluna temporal
-            df['data_hora'] = pd.to_datetime(df['data_hora'], errors='coerce')
-            
-            # Cálculos do Triângulo de Potências (S = P / FP, Q = sqrt(S^2 - P^2))
-            df['potencia_aparente_kva'] = df['demanda_kw'] / df['fator_potencia']
-            df['potencia_reativa_kvar'] = np.sqrt(
-                np.maximum(0, df['potencia_aparente_kva']**2 - df['demanda_kw']**2)
+    def salvar_metricas(self, modelo: str, mae: float, rmse: float, r2: float):
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("INSERT INTO metricas_modelo (data_execucao, modelo, mae, rmse, r2) VALUES (:d, :m, :mae, :rmse, :r2)"),
+                {"d": datetime.now(), "m": modelo, "mae": mae, "rmse": rmse, "r2": r2}
             )
-        else:
-            df['potencia_aparente_kva'] = pd.Series(dtype='float64')
-            df['potencia_reativa_kvar'] = pd.Series(dtype='float64')
-            
+
+    def carregar_dados(self) -> pd.DataFrame:
+        with self.engine.connect() as conn:
+            df = pd.read_sql_query(text("SELECT * FROM leituras ORDER BY data_hora ASC"), conn)
+        if not df.empty:
+            df['data_hora'] = pd.to_datetime(df['data_hora'])
         return df
 
-    def atualizar_leitura(self, id_registro: int, novo_valor_kw: float, novo_fp: float):
-        # Atualiza o registro por ID
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE leituras SET demanda_kw = ?, fator_potencia = ? WHERE id = ?", 
-                (novo_valor_kw, novo_fp, id_registro)
-            )
-            conn.commit()
+    def carregar_metricas(self) -> pd.DataFrame:
+        with self.engine.connect() as conn:
+            return pd.read_sql_query(text("SELECT * FROM metricas_modelo ORDER BY data_execucao DESC"), conn)
 
-    def deletar_leitura(self, id_registro: int):
-        # Remove a leitura selecionada
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM leituras WHERE id = ?", (id_registro,))
-            conn.commit()
+    def carregar_dados_reais_ou_simulados(self, num_dias=180):
+        """Carrega dados da base local ou gera uma estrutura operacional completa caso vazia."""
+        df_existente = self.carregar_dados()
+        if not df_existente.empty:
+            return
+
+        ponto = "Subestação Principal UTFPR"
+        data_inicial = datetime.now() - timedelta(days=num_dias)
+        registros = []
+
+        for dia in range(num_dias):
+            dt_dia = data_inicial + timedelta(days=dia)
+            dia_semana = dt_dia.weekday()
+            periodo_letivo = 0 if dt_dia.month in [1, 7] else 1
+            feriado = 1 if dia_semana == 6 else 0
+
+            for hora in range(24):
+                dt = dt_dia + timedelta(hours=hora)
+                temp = 15.0 + 10.0 * np.sin(np.pi * (hora - 6) / 12) + np.random.normal(0, 1.0)
+                umid = max(30.0, min(100.0, 80.0 - (temp - 15.0) * 2.0))
+                irrad = max(0.0, 900.0 * np.sin(np.pi * (hora - 6) / 12)) if 6 <= hora <= 18 else 0.0
+                vento = max(0.5, np.random.normal(3.0, 1.0))
+                press = np.random.normal(1013.25, 3.0)
+
+                base = (110.0 + 40.0 * np.sin(np.pi * (hora - 7) / 14)) if (periodo_letivo and not feriado and dia_semana < 5) else 30.0
+                if temp > 22.0:
+                    base += (temp - 22.0) * 3.5
+                demanda = max(10.0, base + np.random.normal(0, 3.0))
+                fp = round(np.random.uniform(0.92, 0.98), 2)
+
+                registros.append({
+                    "ponto": ponto, "demanda_kw": round(demanda, 2), "fator_potencia": fp,
+                    "temperatura": round(temp, 2), "umidade": round(umid, 2), "irradiancia": round(irrad, 2),
+                    "velocidade_vento": round(vento, 2), "pressao_atm": round(press, 2),
+                    "feriado": feriado, "periodo_letivo": periodo_letivo,
+                    "data_hora": dt.strftime("%Y-%m-%d %H:%M:%S")
+                })
+
+        df_ins = pd.DataFrame(registros)
+        df_ins.to_sql("leituras", self.engine, if_exists="append", index=False)
 
 
 # =========================================================================
-# 2. ANÁLISE CIENTÍFICA, MACHINE LEARNING & ÁLGEBRA SIMBÓLICA
+# 5. ENGENHARIA DE FEATURES
 # =========================================================================
-class EnergyAnalytics:
-    """Módulo responsável por estatística, previsão por IA, anomalias e tarifação detalhada."""
+class FeatureEngineer:
+    @staticmethod
+    def processar_features(df: pd.DataFrame, train_ratio: float = 0.8) -> tuple[pd.DataFrame, int]:
+        d = df.copy().sort_values('data_hora').reset_index(drop=True)
+
+        d['lag_24'] = d['demanda_kw'].shift(24)
+        d['lag_72'] = d['demanda_kw'].shift(72)
+        d['lag_168'] = d['demanda_kw'].shift(168)
+        d['lag_336'] = d['demanda_kw'].shift(336)
+
+        d['rolling_mean_168'] = d['demanda_kw'].shift(1).rolling(168).mean()
+        d['rolling_std_24'] = d['demanda_kw'].shift(1).rolling(24).std()
+        d['rolling_std_168'] = d['demanda_kw'].shift(1).rolling(168).std()
+        d['ewma_24'] = d['demanda_kw'].shift(1).ewm(span=24).mean()
+
+        d['interacao_temp_hora'] = d['temperatura'] * d['data_hora'].dt.hour
+        d['sin_hora'] = np.sin(2 * np.pi * d['data_hora'].dt.hour / 24.0)
+        d['cos_hora'] = np.cos(2 * np.pi * d['data_hora'].dt.hour / 24.0)
+        d['sin_dia_semana'] = np.sin(2 * np.pi * d['data_hora'].dt.dayofweek / 7.0)
+        d['cos_dia_semana'] = np.cos(2 * np.pi * d['data_hora'].dt.dayofweek / 7.0)
+
+        d['causal_trend'] = d['demanda_kw'].shift(1).rolling(168, min_periods=24).mean()
+        d['causal_seasonal_24'] = d['demanda_kw'].shift(1) - d['demanda_kw'].shift(1).rolling(24, min_periods=1).mean()
+
+        d = d.dropna().reset_index(drop=True)
+        split_idx = int(len(d) * train_ratio)
+
+        return d, split_idx
+
+
+# =========================================================================
+# 6. DEEP LEARNING (TRANSFORMER COM VISUALIZAÇÃO DE ATENÇÃO E AMP - MELHORIA 5)
+# =========================================================================
+class TemporalTransformerEncoder(nn.Module):
+    """Transformer Encoder com Extração de Atenção Multi-Head e Projeção."""
+    def __init__(self, input_dim: int, d_model: int = 64, nhead: int = 4, num_layers: int = 2, max_len: int = 500):
+        super(TemporalTransformerEncoder, self).__init__()
+        self.input_projection = nn.Linear(input_dim, d_model)
+        self.pos_embedding = nn.Embedding(max_len, d_model)
+        self.layer_norm = nn.LayerNorm(d_model)
+        
+        self.attn_layer = nn.MultiheadAttention(embed_dim=d_model, num_heads=nhead, batch_first=True)
+        self.fc_out = nn.Linear(d_model, 1)
+
+    def forward(self, x: torch.Tensor, return_attn: bool = False):
+        b, s, f = x.shape
+        x_proj = self.input_projection(x)
+        
+        positions = torch.arange(0, s, device=x.device).unsqueeze(0).repeat(b, 1)
+        x_pos = x_proj + self.pos_embedding(positions)
+        x_norm = self.layer_norm(x_pos)
+        
+        # Máscara Causal
+        mask = torch.triu(torch.full((s, s), float('-inf')), diagonal=1).to(x.device)
+        attn_out, attn_weights = self.attn_layer(x_norm, x_norm, x_norm, attn_mask=mask)
+        
+        out = self.fc_out(attn_out[:, -1, :])
+        
+        if return_attn:
+            return out, attn_weights
+        return out
+
+
+def preparar_sequencias(X_arr: np.ndarray, y_arr: np.ndarray, seq_len: int = TRANSFORMER_SEQ_LEN):
+    if len(X_arr) < seq_len + 1:
+        raise ValueError(f"Amostras insuficientes ({len(X_arr)}) para janela de tamanho {seq_len}.")
+    X_seq = np.array([X_arr[i:i+seq_len] for i in range(len(X_arr)-seq_len)])
+    y_seq = y_arr[seq_len:]
+    return X_seq, y_seq
+
+
+def treinar_pytorch_model(model, X_tr, y_tr, X_val, y_val, X_te, epochs=30, lr=0.001, patience=5):
+    """Treina o modelo PyTorch utilizando Automatic Mixed Precision (AMP)."""
+    n_samples_tr, s_len, n_features = X_tr.shape
+    
+    scaler_transformer = StandardScaler()
+    X_tr_2d = scaler_transformer.fit_transform(X_tr.reshape(-1, n_features))
+    X_val_2d = scaler_transformer.transform(X_val.reshape(-1, n_features))
+    X_te_2d = scaler_transformer.transform(X_te.reshape(-1, n_features))
+    
+    X_tr_scaled = X_tr_2d.reshape(n_samples_tr, s_len, n_features)
+    X_val_scaled = X_val_2d.reshape(X_val.shape[0], s_len, n_features)
+    X_te_scaled = X_te_2d.reshape(X_te.shape[0], s_len, n_features)
+
+    model = model.to(DEVICE)
+    X_tr_t = torch.tensor(X_tr_scaled, dtype=torch.float32).to(DEVICE)
+    y_tr_t = torch.tensor(y_tr, dtype=torch.float32).unsqueeze(1).to(DEVICE)
+    X_val_t = torch.tensor(X_val_scaled, dtype=torch.float32).to(DEVICE)
+    y_val_t = torch.tensor(y_val, dtype=torch.float32).unsqueeze(1).to(DEVICE)
+    X_te_t = torch.tensor(X_te_scaled, dtype=torch.float32).to(DEVICE)
+
+    dataset = TensorDataset(X_tr_t, y_tr_t)
+    loader = DataLoader(dataset, batch_size=32, shuffle=False)
+
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+    scaler_amp = torch.cuda.amp.GradScaler(enabled=torch.cuda.is_available())
+    criterion = nn.MSELoss()
+
+    best_val_loss = float('inf')
+    best_weights = None
+
+    for epoch in range(epochs):
+        model.train()
+        for bx, by in loader:
+            optimizer.zero_grad()
+            with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
+                out = model(bx)
+                loss = criterion(out, by)
+            
+            scaler_amp.scale(loss).backward()
+            scaler_amp.step(optimizer)
+            scaler_amp.update()
+
+        model.eval()
+        with torch.no_grad():
+            val_preds = model(X_val_t)
+            val_loss = criterion(val_preds, y_val_t).item()
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            best_weights = copy.deepcopy(model.state_dict())
+
+    if best_weights is not None:
+        model.load_state_dict(best_weights)
+
+    model.eval()
+    with torch.no_grad():
+        preds = model(X_te_t).cpu().numpy().flatten()
+        
+    return preds, model
+
+
+# =========================================================================
+# 7. AVALIAÇÃO DE PREVISÃO PROBABILÍSTICA (MELHORIA 9: PINBALL & COVERAGE)
+# =========================================================================
+class ProbabilisticEvaluator:
+    @staticmethod
+    def pinball_loss(y_true: np.ndarray, y_pred: np.ndarray, quantile: float) -> float:
+        """Calcula a perda Pinball (Quantile Loss) para um quantil específico."""
+        errors = y_true - y_pred
+        return float(np.mean(np.maximum(quantile * errors, (quantile - 1) * errors)))
 
     @staticmethod
-    def analise_estatistica(df: pd.DataFrame) -> dict:
-        if df.empty:
-            return {}
+    def coverage_probability(y_true: np.ndarray, lower_bound: np.ndarray, upper_bound: np.ndarray) -> float:
+        """Calcula o PICP (Prediction Interval Coverage Probability)."""
+        covered = (y_true >= lower_bound) & (y_true <= upper_bound)
+        return float(np.mean(covered) * 100)
 
-        demandas = df['demanda_kw'].to_numpy()
-        fps = df['fator_potencia'].to_numpy()
 
-        media_p = float(np.mean(demandas))
-        desvio_p = float(np.std(demandas, ddof=1)) if len(demandas) > 1 else 0.0
-        pico_p = float(np.max(demandas))
-        min_p = float(np.min(demandas))
+# =========================================================================
+# 8. ENSEMBLE PIPELINE COM OTIMIZAÇÃO E PRUNING (MELHORIA 4)
+# =========================================================================
+class EnsembleModelPipeline:
+    def __init__(self, best_xgb_params=None, seed=42):
+        xgb_params = best_xgb_params if best_xgb_params else {'n_estimators': 100}
+        xgb_params['random_state'] = seed
         
-        fator_carga = media_p / pico_p if pico_p > 0 else 0.0
-        media_fp = float(np.mean(fps))
-
-        return {
-            "total_amostras": len(demandas),
-            "media_kw": media_p,
-            "desvio_padrao": desvio_p,
-            "pico_kw": pico_p,
-            "minimo_kw": min_p,
-            "fator_carga": fator_carga,
-            "fp_medio": media_fp
+        self.models = {
+            'XGBoost': xgb.XGBRegressor(**xgb_params),
+            'LightGBM': lgb.LGBMRegressor(random_state=seed, n_estimators=100, verbose=-1),
+            'CatBoost': CatBoostRegressor(random_state=seed, iterations=100, verbose=0),
+            'RandomForest': RandomForestRegressor(random_state=seed, n_estimators=50)
         }
-
-    @staticmethod
-    def prever_demanda_futura(df: pd.DataFrame, dias_previsao: int = 30) -> pd.DataFrame:
-        """Modelagem preditiva temporal usando Regressão Linear do Scikit-Learn."""
-        df_temp = df.dropna(subset=['data_hora']).sort_values('data_hora').copy()
+        self.weights = {}
         
-        if len(df_temp) < 3:
-            return pd.DataFrame()
+    def fit_predict_ensemble(self, X_tr, y_tr, X_te, n_splits=3):
+        tscv = TimeSeriesSplit(n_splits=n_splits)
+        scores_mae = {m: [] for m in self.models}
 
-        # Conversão de timestamps para dias contínuos
-        data_minima = df_temp['data_hora'].min()
-        df_temp['dias_num'] = (df_temp['data_hora'] - data_minima).dt.total_seconds() / (24 * 3600)
+        for train_cv, val_cv in tscv.split(X_tr):
+            X_cv_tr, X_cv_val = X_tr[train_cv], X_tr[val_cv]
+            y_cv_tr, y_cv_val = y_tr[train_cv], y_tr[val_cv]
 
-        X = df_temp[['dias_num']].values
-        y = df_temp['demanda_kw'].values
+            for name, model in self.models.items():
+                m_fold = clone(model)
+                m_fold.fit(X_cv_tr, y_cv_tr)
+                preds_val = m_fold.predict(X_cv_val)
+                scores_mae[name].append(mean_absolute_error(y_cv_val, preds_val))
 
-        # Ajuste do modelo de regressão linear
-        modelo = LinearRegression()
-        modelo.fit(X, y)
+        # Softmax Negativo dos Erros
+        inv_errors = {m: np.exp(-np.mean(scores_mae[m])) for m in self.models}
+        total_inv_error = sum(inv_errors.values())
+        self.weights = {m: inv_errors[m] / total_inv_error for m in inv_errors}
 
-        # Projeção temporal futura
-        ultimo_dia_num = df_temp['dias_num'].max()
-        dias_futuros = np.linspace(ultimo_dia_num + 1, ultimo_dia_num + dias_previsao, dias_previsao).reshape(-1, 1)
-        predicoes_kw = modelo.predict(dias_futuros)
-
-        datas_futuras = [data_minima + pd.Timedelta(days=float(d[0])) for d in dias_futuros]
-
-        return pd.DataFrame({
-            'data_hora': datas_futuras,
-            'demanda_prevista_kw': np.maximum(0, predicoes_kw)
-        })
-
-    @staticmethod
-    def detectar_anomalias(df: pd.DataFrame, contaminacao: float = 0.05) -> pd.DataFrame:
-        """Detecção não supervisionada de surtos de carga usando Isolation Forest."""
-        df_anom = df.copy()
-        if len(df_anom) < 5:
-            df_anom['anomalia'] = 1
-            return df_anom
-
-        X = df_anom[['demanda_kw', 'fator_potencia']].values
-        detector = IsolationForest(contamination=contaminacao, random_state=42)
-        
-        df_anom['anomalia'] = detector.fit_predict(X)
-        return df_anom
-
-    @staticmethod
-    def modelar_triangulo_potencias_simbolico() -> dict:
-        """Diferenciação simbólica com SymPy para equações de qualidade de energia."""
-        P, FP = sp.symbols('P FP')
-        S = P / FP
-        Q = sp.sqrt(S**2 - P**2)
-        dQ_dFP = sp.diff(Q, FP)
-        
-        return {
-            "potencia_aparente_latex": sp.latex(S),
-            "potencia_reativa_latex": sp.latex(sp.simplify(Q)),
-            "sensibilidade_fp_latex": sp.latex(sp.simplify(dQ_dFP))
-        }
-
-    @staticmethod
-    def calcular_tarifacao_dupla(df: pd.DataFrame, tarifa_kwh: float) -> dict:
-        """Calcula tarifação industrial (hora, mês, ano) e residencial (médio, último, acumulado)."""
-        if df.empty:
-            return {}
-
-        p_media_kw = float(df['demanda_kw'].mean())
-
-        # Perfil Industrial (Grupo A - Regime Operacional Contínuo em kW)
-        consumo_ind_hora_kwh = p_media_kw * 1.0
-        custo_ind_hora = consumo_ind_hora_kwh * tarifa_kwh
-
-        consumo_ind_mes_kwh = p_media_kw * 24 * 30
-        custo_ind_mes = consumo_ind_mes_kwh * tarifa_kwh
-
-        consumo_ind_ano_kwh = p_media_kw * 24 * 365
-        custo_ind_ano = consumo_ind_ano_kwh * tarifa_kwh
-
-        # Perfil Residencial (Grupo B - Registros Mensais em kWh)
-        consumo_res_media_kwh = float(df['demanda_kw'].mean())
-        custo_res_media_mes = consumo_res_media_kwh * tarifa_kwh
-
-        consumo_res_ultimo_kwh = float(df['demanda_kw'].iloc[-1])
-        custo_res_ultimo_mes = consumo_res_ultimo_kwh * tarifa_kwh
-
-        consumo_res_total_kwh = float(df['demanda_kw'].sum())
-        custo_res_total = consumo_res_total_kwh * tarifa_kwh
-
-        return {
-            "p_media_kw": p_media_kw,
-            "consumo_ind_hora_kwh": consumo_ind_hora_kwh,
-            "custo_ind_hora": custo_ind_hora,
-            "consumo_ind_mes_kwh": consumo_ind_mes_kwh,
-            "custo_ind_mes": custo_ind_mes,
-            "consumo_ind_ano_kwh": consumo_ind_ano_kwh,
-            "custo_ind_ano": custo_ind_ano,
-            "consumo_res_media_kwh": consumo_res_media_kwh,
-            "custo_res_media_mes": custo_res_media_mes,
-            "consumo_res_ultimo_kwh": consumo_res_ultimo_kwh,
-            "custo_res_ultimo_mes": custo_res_ultimo_mes,
-            "consumo_res_total_kwh": consumo_res_total_kwh,
-            "custo_res_total": custo_res_total
-        }
+        preds_dict = {}
+        for name, model in self.models.items():
+            model.fit(X_tr, y_tr)
+            preds_dict[name] = model.predict(X_te)
+            
+        ensemble_pred = sum(preds_dict[name] * self.weights[name] for name in self.models)
+        preds_dict['Ensemble_Weighted'] = ensemble_pred
+        return preds_dict
 
 
 # =========================================================================
-# 3. SCRAPING E PARSER TARIFÁRIO DA ANEEL
+# 9. INTERFACE INTERATIVA STREAMLIT
 # =========================================================================
-class TariffScraper:
-    """Extração e processamento de dados tarifários oficiais."""
+st.set_page_config(page_title="Plataforma de Inteligencia Energetica UTFPR", page_icon="⚡", layout="wide")
 
-    @staticmethod
-    def processar_planilha_aneel(df_aneel: pd.DataFrame) -> float:
-        df_aneel.columns = [str(c).lower().strip() for c in df_aneel.columns]
-        col_tarifa = [c for c in df_aneel.columns if 'vlr' in c or 'tarifa' in c or 'kwh' in c]
-        
-        if col_tarifa:
-            valores_validos = pd.to_numeric(df_aneel[col_tarifa[0]], errors='coerce').dropna()
-            if not valores_validos.empty:
-                return float(valores_validos.mean())
-        
-        return 0.75
+db = DatabaseManager()
+db.carregar_dados_reais_ou_simulados()
+df_raw = db.carregar_dados()
 
-    @staticmethod
-    def obter_cotacao_web() -> dict:
-        url = "https://www.epe.gov.br/pt"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        try:
-            response = requests.get(url, headers=headers, timeout=3)
-            if response.status_code == 200:
-                soup = BeautifulSoup(response.text, 'html.parser')
-                title = soup.title.string.strip() if soup.title else "EPE Brasil"
-                return {"status": "Online", "fonte": title, "tarifa_estimada_kwh": 0.75}
-        except Exception:
-            pass
-        
-        return {"status": "Simulado (Offline)", "fonte": "Tabela Referência ANEEL", "tarifa_estimada_kwh": 0.75}
+st.title("⚡ Plataforma Integrada de Inteligência Energética UTFPR")
 
+st.sidebar.header("🕹️ Módulos de Pesquisa")
+opcao = st.sidebar.radio("Selecione:", [
+    "📊 Benchmarking & Nested CV",
+    "🔮 Previsão Probabilística",
+    "🧠 XAI: SHAP & Partial Dependence",
+    "📉 Detecção Avançada de Drift (PSI)",
+    "⚙️ MLOps & Arquivos de Configuração"
+])
 
-# =========================================================================
-# 4. AUTOMAÇÃO DE RELATÓRIOS PDF (ReportLab)
-# =========================================================================
-class PDFReportGenerator:
-    """Geração de laudos técnicos formais no formato PDF."""
+cols_x = [
+    'lag_24', 'lag_72', 'lag_168', 'lag_336',
+    'rolling_mean_168', 'rolling_std_24', 'rolling_std_168', 'ewma_24',
+    'interacao_temp_hora', 'sin_hora', 'cos_hora',
+    'causal_trend', 'causal_seasonal_24'
+]
 
-    @staticmethod
-    def gerar_relatorio_pdf(filename: str, estatisticas: dict, total_anomalias: int = 0) -> str:
-        doc = SimpleDocTemplate(filename, pagesize=letter)
-        styles = getSampleStyleSheet()
-        story = []
-
-        title = Paragraph("<b>RELATÓRIO DE ANÁLISE DE CARGA E INTELIGÊNCIA - UTFPR</b>", styles['Title'])
-        story.append(title)
-        story.append(Spacer(1, 15))
-
-        sub = Paragraph("Iniciação Científica - Automação e Gerenciamento Energético", styles['Heading2'])
-        story.append(sub)
-        story.append(Spacer(1, 20))
-
-        data = [
-            ["Métrica Analisada", "Valor Apurado"],
-            ["Total de Medições", str(estatisticas.get('total_amostras', 0))],
-            ["Média da Demanda (kW)", f"{estatisticas.get('media_kw', 0):.2f}"],
-            ["Demanda de Pico (kW)", f"{estatisticas.get('pico_kw', 0):.2f}"],
-            ["Fator de Potência Médio", f"{estatisticas.get('fp_medio', 0):.2f}"],
-            ["Anomalias Detectadas (Isolation Forest)", str(total_anomalias)]
-        ]
-
-        tabela = Table(data, colWidths=[240, 160])
-        tabela.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#003366')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-            ('BACKGROUND', (0, 1), (-1, -1), colors.HexColor('#f5f5f5')),
-            ('GRID', (0, 0), (-1, -1), 1, colors.grey)
-        ]))
-
-        story.append(tabela)
-        doc.build(story)
-        return filename
-
-
-# =========================================================================
-# 5. INTERFACE DASHBOARD (Streamlit)
-# =========================================================================
-st.set_page_config(page_title="Sistema de Energia - IC UTFPR", page_icon="⚡", layout="wide")
-
-db = EnergyDatabase()
-
-st.title("⚡ Sistema Integrado de Gerenciamento de Energia & Inteligência")
-st.caption("Projeto de Iniciação Científica — Autor: Lucas Chagas | UTFPR")
-
-st.sidebar.header("🔧 Operações do Sistema")
-menu_op = st.sidebar.selectbox(
-    "Escolha uma Ação:",
-    [
-        "Dashboard & Analytics", 
-        "Análise Temporal & IA", 
-        "Inserir Leitura Única", 
-        "Importar CSV/Excel", 
-        "Gerenciar Registros", 
-        "Tarifação & Dados ANEEL"
-    ]
-)
-
-df = db.carregar_dados_df()
-
-# --- LÓGICA DAS TELAS DO DASHBOARD ---
-if menu_op == "Dashboard & Analytics":
-    st.subheader("📊 Painel Geral de Consumo e Detecção de Anomalias")
+if opcao == "📊 Benchmarking & Nested CV":
+    st.subheader("📊 Avaliação de Desempenho e Validação Estatística")
     
-    if df.empty:
-        st.info("Nenhum dado cadastrado. Cadastre medições usando o menu lateral.")
-    else:
-        stats_data = EnergyAnalytics.analise_estatistica(df)
-        df_anomalia = EnergyAnalytics.detectar_anomalias(df)
-        num_anomalias = (df_anomalia['anomalia'] == -1).sum()
+    if st.button("Executar Pipeline de Validação Completa"):
+        with st.spinner("Processando dados e otimizando com Optuna (Pruning & Parallel Search)..."):
+            df_proc, split_idx = FeatureEngineer.processar_features(df_raw, train_ratio=0.8)
+            X = df_proc[cols_x].values
+            y = df_proc['demanda_kw'].values
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Demanda Média", f"{stats_data['media_kw']:.2f} kW")
-        c2.metric("Demanda Máxima", f"{stats_data['pico_kw']:.2f} kW")
-        c3.metric("FP Médio", f"{stats_data['fp_medio']:.2f}")
-        c4.metric(
-            "Anomalias de Carga", 
-            f"{num_anomalias} ponto(s)", 
-            delta="Atenção" if num_anomalias > 0 else "Operação Normal",
-            delta_color="inverse" if num_anomalias > 0 else "normal"
-        )
+            X_tr, X_te = X[:split_idx], X[split_idx:]
+            y_tr, y_te = y[:split_idx], y[split_idx:]
 
-        st.divider()
+            scaler = StandardScaler()
+            X_tr_sc = scaler.fit_transform(X_tr)
+            X_te_sc = scaler.transform(X_te)
 
-        col_graf, col_sym = st.columns([2, 1])
+            # Optuna com Pruning Ativado (Melhoria 4)
+            def objective(trial):
+                params = {
+                    'n_estimators': trial.suggest_int('n_estimators', 50, 150),
+                    'max_depth': trial.suggest_int('max_depth', 3, 7),
+                    'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.15)
+                }
+                tscv = TimeSeriesSplit(n_splits=3)
+                maes = []
+                for step, (tr_idx, val_idx) in enumerate(tscv.split(X_tr_sc)):
+                    m = xgb.XGBRegressor(**params, random_state=SEED)
+                    m.fit(X_tr_sc[tr_idx], y_tr[tr_idx])
+                    p = m.predict(X_tr_sc[val_idx])
+                    mae_step = mean_absolute_error(y_tr[val_idx], p)
+                    maes.append(mae_step)
+                    
+                    trial.report(mae_step, step)
+                    if trial.should_prune():
+                        raise optuna.TrialPruned()
+                return np.mean(maes)
 
-        with col_graf:
-            st.markdown("### Monitoramento de Anomalias na Curva de Potência")
-            df_anomalia['status'] = df_anomalia['anomalia'].map({1: 'Operação Normal', -1: 'Anomalia Detectada'})
+            study = optuna.create_study(direction="minimize", pruner=optuna.pruners.MedianPruner())
+            study.optimize(objective, n_trials=10, n_jobs=-1)
             
-            fig = px.scatter(
-                df_anomalia,
-                x='demanda_kw',
-                y='fator_potencia',
-                color='status',
-                hover_data=['ponto'],
-                color_discrete_map={'Operação Normal': '#003366', 'Anomalia Detectada': '#FF0000'},
-                title="Dispersão: Demanda vs. Fator de Potência"
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            st.write("Best Hyperparameters (Optuna):", study.best_params)
 
-        with col_sym:
-            st.markdown("### 🧮 Modelagem Matemática (SymPy)")
-            simb = EnergyAnalytics.modelar_triangulo_potencias_simbolico()
-            st.latex(r"S = \frac{P}{FP}, \quad Q = \sqrt{S^2 - P^2}")
-            st.write("**Potência Reativa Simbólica ($Q$):**")
-            st.latex(f"Q = {simb['potencia_reativa_latex']}")
+            pipeline = EnsembleModelPipeline(best_xgb_params=study.best_params, seed=SEED)
+            preds_dict = pipeline.fit_predict_ensemble(X_tr_sc, y_tr, X_te_sc)
 
-        st.divider()
+            # Teste de Diebold-Mariano entre Ensemble e XGBoost (Melhoria 3)
+            dm_p_value = diebold_mariano_test(y_te, preds_dict['Ensemble_Weighted'], preds_dict['XGBoost'])
+            eff_size = cohens_d(y_te - preds_dict['Ensemble_Weighted'], y_te - preds_dict['XGBoost'])
 
-        if st.button("Gerar Relatório Técnico PDF"):
-            pdf_name = "Relatorio_Energia_UTFPR.pdf"
-            PDFReportGenerator.gerar_relatorio_pdf(pdf_name, stats_data, total_anomalias=int(num_anomalias))
-            
-            with open(pdf_name, "rb") as pdf_file:
-                st.download_button("📥 Baixar Relatório Técnico PDF", data=pdf_file, file_name=pdf_name, mime="application/pdf")
+            st.markdown(f"**Diebold-Mariano Test (Ensemble vs XGBoost):** p-valor = `{dm_p_value:.5f}`")
+            st.markdown(f"**Tamanho de Efeito (Cohen's d):** `{eff_size:.4f}`")
 
-elif menu_op == "Análise Temporal & IA":
-    st.subheader("📈 Séries Temporais e Predição de Demanda Futura com IA")
+elif opcao == "🔮 Previsão Probabilística":
+    st.subheader("🔮 Avaliação Metrológica de Quantis (Pinball Loss & Coverage)")
+    df_proc, split_idx = FeatureEngineer.processar_features(df_raw)
+    X = df_proc[cols_x].values
+    y = df_proc['demanda_kw'].values
+    X_tr, X_te = X[:split_idx], X[split_idx:]
+    y_tr, y_te = y[:split_idx], y[split_idx:]
+
+    # Treinamento Quantílico via LightGBM
+    m_p5 = lgb.LGBMRegressor(objective="quantile", alpha=0.05, random_state=SEED, verbose=-1).fit(X_tr, y_tr)
+    m_p50 = lgb.LGBMRegressor(objective="quantile", alpha=0.50, random_state=SEED, verbose=-1).fit(X_tr, y_tr)
+    m_p95 = lgb.LGBMRegressor(objective="quantile", alpha=0.95, random_state=SEED, verbose=-1).fit(X_tr, y_tr)
+
+    p5 = m_p5.predict(X_te)
+    p50 = m_p50.predict(X_te)
+    p95 = m_p95.predict(X_te)
+
+    loss_p5 = ProbabilisticEvaluator.pinball_loss(y_te, p5, 0.05)
+    loss_p95 = ProbabilisticEvaluator.pinball_loss(y_te, p95, 0.95)
+    coverage = ProbabilisticEvaluator.coverage_probability(y_te, p5, p95)
+
+    st.metric("Pinball Loss (P5)", f"{loss_p5:.4f}")
+    st.metric("Pinball Loss (P95)", f"{loss_p95:.4f}")
+    st.metric("Prediction Interval Coverage Probability (PICP)", f"{coverage:.2f}%")
+
+elif opcao == "🧠 XAI: SHAP & Partial Dependence":
+    st.subheader("🧠 Interpretabilidade de Modelos (SHAP & PDP)")
+    df_proc, _ = FeatureEngineer.processar_features(df_raw)
+    X = df_proc[cols_x].values
+    y = df_proc['demanda_kw'].values
+
+    m = xgb.XGBRegressor(random_state=SEED).fit(X, y)
     
-    if df.empty or df['data_hora'].dropna().empty:
-        st.warning("É necessário possuir registros cadastrados com data e hora para habilitar os módulos de inteligência temporal.")
-    else:
-        st.markdown("### 1. Histórico e Curva de Carga no Tempo")
-        df_temporal = df.dropna(subset=['data_hora']).sort_values('data_hora')
-        
-        fig_temp = px.line(
-            df_temporal, 
-            x='data_hora', 
-            y='demanda_kw', 
-            color='ponto', 
-            markers=True,
-            title="Evolução Temporal da Demanda Ativa (kW)"
-        )
-        st.plotly_chart(fig_temp, use_container_width=True)
-
-        st.divider()
-
-        st.markdown("### 2. Previsão de Demanda Futura (Machine Learning - Scikit-Learn)")
-        dias_proj = st.slider("Selecione o horizonte de projeção em dias:", min_value=7, max_value=60, value=30)
-        
-        df_prev = EnergyAnalytics.prever_demanda_futura(df_temporal, dias_previsao=dias_proj)
-        
-        if not df_prev.empty:
-            fig_prev = go.Figure()
-            fig_prev.add_trace(go.Scatter(
-                x=df_temporal['data_hora'], y=df_temporal['demanda_kw'],
-                mode='lines+markers', name='Histórico Real', line=dict(color='#003366')
-            ))
-            fig_prev.add_trace(go.Scatter(
-                x=df_prev['data_hora'], y=df_prev['demanda_prevista_kw'],
-                mode='lines+markers', name='Projeção IA', line=dict(color='#FF7F0E', dash='dash')
-            ))
-            fig_prev.update_layout(title="Tendência e Previsão de Carga para os Próximos Dias", xaxis_title="Data", yaxis_title="Demanda (kW)")
-            st.plotly_chart(fig_prev, use_container_width=True)
-        else:
-            st.info("Cadastre pelo menos 3 leituras em datas distintas para habilitar a projeção por IA.")
-
-elif menu_op == "Inserir Leitura Única":
-    st.subheader("➕ Novo Registro Manual de Demanda")
+    st.markdown("#### Partial Dependence Plot (PDP) - Temperatura x Hora")
+    pdp_results = partial_dependence(m, X, features=[cols_x.index('interacao_temp_hora')])
     
-    with st.form("form_inserir"):
-        ponto = st.text_input("Nome da Subestação / Ponto de Medição", placeholder="Ex: SE-01 Bloco A")
-        demanda = st.number_input("Demanda Consumida (kW)", min_value=0.0, step=0.1)
-        fp = st.number_input("Fator de Potência (FP)", min_value=0.01, max_value=1.0, value=0.92, step=0.01)
-        data_custom = st.date_input("Data da Medição")
-        
-        btn_submit = st.form_submit_button("Salvar Registro")
-        
-        if btn_submit:
-            if ponto and demanda > 0:
-                data_str = data_custom.strftime("%Y-%m-%d 12:00:00")
-                db.inserir_leitura(ponto, demanda, fp, data_str)
-                st.success(f"Leitura registrada com sucesso para {data_str}!")
-                st.rerun()
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(pdp_results['grid_values'][0], pdp_results['average'][0])
+    ax.set_xlabel("Interação Temperatura-Hora")
+    ax.set_ylabel("Impacto na Demanda Prevista (kW)")
+    ax.grid(True)
+    st.pyplot(fig)
 
-elif menu_op == "Importar CSV/Excel":
-    st.subheader("📁 Importação Massiva de Arquivos de Medição")
-    st.markdown("Envie planilhas contendo as colunas: **`ponto`**, **`demanda_kw`**, **`fator_potencia`** e **`data_hora`**.")
+elif opcao == "📉 Detecção Avançada de Drift (PSI)":
+    st.subheader("📉 Monitoramento Estatístico de Data Drift (PSI)")
+    df_proc, split_idx = FeatureEngineer.processar_features(df_raw)
+    X = df_proc[cols_x].values
+    X_tr, X_te = X[:split_idx], X[split_idx:]
+
+    psi_list = []
+    for i, col in enumerate(cols_x):
+        psi_val = AdvancedDriftMonitor.calculate_psi(X_tr[:, i], X_te[:, i])
+        psi_list.append({"Feature": col, "PSI": psi_val, "Status": "Drift Elevado" if psi_val > 0.2 else ("Atenção" if psi_val > 0.1 else "Estável")})
+
+    st.dataframe(pd.DataFrame(psi_list), use_container_width=True)
+
+elif opcao == "⚙️ MLOps & Arquivos de Configuração":
+    st.subheader("⚙️ MLOps & Pipeline de Orquestração (Melhoria 6)")
     
-    arquivo_carregado = st.file_uploader("Selecione o arquivo de medições", type=["csv", "xlsx"])
-    
-    if arquivo_carregado is not None:
-        try:
-            df_import = pd.read_csv(arquivo_carregado) if arquivo_carregado.name.endswith('.csv') else pd.read_excel(arquivo_carregado)
-            st.dataframe(df_import.head(), use_container_width=True)
-            
-            if st.button("Gravar Registros no Banco SQLite"):
-                if db.importar_dados_csv_excel(df_import):
-                    st.success("Dados salvos com sucesso!")
-                    st.rerun()
-        except Exception as e:
-            st.error(f"Erro no processamento: {e}")
+    st.markdown("### `Dockerfile` Recomendado")
+    st.code('''
+FROM python:3.10-slim
 
-elif menu_op == "Gerenciar Registros":
-    st.subheader("⚙️ Visualização, Edição e Análise Detalhada dos Registros")
-    
-    if df.empty:
-        st.info("Nenhum dado cadastrado para gerenciamento.")
-    else:
-        # Seletor dinâmico para modos de visualização no banco de dados
-        modo_visao = st.radio(
-            "Selecione o Modo de Visualização do Banco de Dados:",
-            ["Tabela Geral (CRUD)", "Registros Mensais (Residencial)", "Gastos por Hora (Industrial)"],
-            horizontal=True
-        )
-        
-        st.divider()
+WORKDIR /app
 
-        if modo_visao == "Tabela Geral (CRUD)":
-            st.markdown("#### Banco de Dados Relacional Completo")
-            st.dataframe(df, use_container_width=True)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-            col_ed, col_del = st.columns(2)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-            with col_ed:
-                st.markdown("#### Editar Registro")
-                id_edit = st.selectbox("Selecione o ID para alterar", df['id'].tolist())
-                novo_val = st.number_input("Novo Valor de Demanda (kW)", min_value=0.0, step=0.1)
-                novo_fp = st.number_input("Novo Fator de Potência", min_value=0.01, max_value=1.0, value=0.92, step=0.01)
-                
-                if st.button("Atualizar Registro"):
-                    db.atualizar_leitura(id_edit, novo_val, novo_fp)
-                    st.success("Registro modificado com sucesso!")
-                    st.rerun()
+COPY . .
 
-            with col_del:
-                st.markdown("#### Excluir Registro")
-                id_del = st.selectbox("Selecione o ID para remover", df['id'].tolist(), key="del_select")
-                if st.button("Remover Registro", type="primary"):
-                    db.deletar_leitura(id_del)
-                    st.warning("Registro excluído!")
-                    st.rerun()
+EXPOSE 8501
 
-        elif modo_visao == "Registros Mensais (Residencial)":
-            st.markdown("#### 🏠 Análise de Registros Mensais (Perfil Residencial)")
-            st.caption("Cada registro é tratado como o consumo total acumulado de um mês em kWh.")
-            
-            # Cotação de tarifa base via scraper ou simulação
-            info_tarifa = TariffScraper.obter_cotacao_web()
-            t_ref = info_tarifa['tarifa_estimada_kwh']
-            
-            df_res = df.copy()
-            df_res['Consumo (kWh)'] = df_res['demanda_kw']
-            df_res['Fatura Estimada (R$)'] = df_res['Consumo (kWh)'] * t_ref
-            
-            st.dataframe(
-                df_res[['id', 'ponto', 'Consumo (kWh)', 'fator_potencia', 'data_hora', 'Fatura Estimada (R$)']],
-                use_container_width=True
-            )
-            
-            c_med, c_ult, c_tot = st.columns(3)
-            c_med.metric("Consumo Médio Mensal", f"{df_res['Consumo (kWh)'].mean():.2f} kWh", f"R$ {df_res['Fatura Estimada (R$)'].mean():.2f}/mês")
-            c_ult.metric("Última Fatura Cadastrada", f"{df_res['Consumo (kWh)'].iloc[-1]:.2f} kWh", f"R$ {df_res['Fatura Estimada (R$)'].iloc[-1]:.2f}")
-            c_tot.metric("Histórico Total Acumulado", f"{df_res['Consumo (kWh)'].sum():.2f} kWh", f"R$ {df_res['Fatura Estimada (R$)'].sum():.2f}")
+CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    ''', language="dockerfile")
 
-        elif modo_visao == "Gastos por Hora (Industrial)":
-            st.markdown("#### 🏭 Análise de Gastos Operacionais por Hora (Perfil Industrial)")
-            st.caption("Cada registro representa a demanda ativa (kW) mantida em operação contínua.")
-            
-            # Cotação de tarifa base via scraper ou simulação
-            info_tarifa = TariffScraper.obter_cotacao_web()
-            t_ref = info_tarifa['tarifa_estimada_kwh']
-            
-            df_ind = df.copy()
-            df_ind['Demanda (kW)'] = df_ind['demanda_kw']
-            df_ind['Custo / Hora (R$/h)'] = df_ind['Demanda (kW)'] * t_ref
-            df_ind['Custo / Mês (720h)'] = df_ind['Custo / Hora (R$/h)'] * 720
-            df_ind['Custo / Ano (8760h)'] = df_ind['Custo / Hora (R$/h)'] * 8760
-            
-            st.dataframe(
-                df_ind[['id', 'ponto', 'Demanda (kW)', 'fator_potencia', 'Custo / Hora (R$/h)', 'Custo / Mês (720h)', 'Custo / Ano (8760h)']],
-                use_container_width=True
-            )
-            
-            c_hr, c_mes, c_ano = st.columns(3)
-            c_hr.metric("Custo Médio Horário", f"R$ {df_ind['Custo / Hora (R$/h)'].mean():,.2f} / h")
-            c_mes.metric("Projeção Mensal Média (720h)", f"R$ {df_ind['Custo / Mês (720h)'].mean():,.2f} / mês")
-            c_ano.metric("Projeção Anual Média (8760h)", f"R$ {df_ind['Custo / Ano (8760h)'].mean():,.2f} / ano")
+    st.markdown("### `GitHub Actions Workflow` (`.github/workflows/ci_cd.yml`)")
+    st.code('''
+name: Integration & Continuous Deployment UTFPR
 
-elif menu_op == "Tarifação & Dados ANEEL":
-    st.subheader("🏛️ Integração Tarifária Oficial (ANEEL e Mercado)")
-    st.markdown("Carregue uma planilha oficial de tarifas publicadas pela **ANEEL** ou concessionárias para atualizar a precificação do sistema.")
-    
-    planilha_aneel = st.file_uploader("Upload da Tabela Tarifária ANEEL (.xlsx / .csv)", type=["xlsx", "csv"])
-    
-    tarifa_aplicada = 0.75  # Valor padrão de referência
-    
-    if planilha_aneel is not None:
-        try:
-            df_aneel = pd.read_csv(planilha_aneel) if planilha_aneel.name.endswith('.csv') else pd.read_excel(planilha_aneel)
-            tarifa_calculada = TariffScraper.processar_planilha_aneel(df_aneel)
-            
-            if tarifa_calculada > 0:
-                tarifa_aplicada = tarifa_calculada
-                st.success(f"Tarifa média extraída com sucesso da planilha da ANEEL: **R$ {tarifa_aplicada:.4f} / kWh**")
-        except Exception as e:
-            st.warning(f"Não foi possível ler a planilha automaticamente. Mantendo tarifa padrão. Erro: {e}")
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
-    st.divider()
-    
-    if not df.empty:
-        # Obtenção dos cálculos consolidados da tarifação para ambos os perfis
-        res_tarifa = EnergyAnalytics.calcular_tarifacao_dupla(df, tarifa_aplicada)
-        
-        st.markdown(f"### Custos Operacionais Atualizados (Tarifa Base: R$ {tarifa_aplicada:.4f}/kWh)")
-        
-        col_ind, col_res = st.columns(2)
-        
-        with col_ind:
-            st.markdown("### 🏭 Perfil Industrial (Grupo A)")
-            st.caption("Operação baseada em Demanda Contínua em Regime de Carga (kW)")
-            st.metric("Demanda Média Operacional", f"{res_tarifa['p_media_kw']:.2f} kW")
-            st.metric("Custo Operacional por Hora", f"R$ {res_tarifa['custo_ind_hora']:,.2f} / h")
-            st.metric("Custo Operacional Mensal (720h)", f"R$ {res_tarifa['custo_ind_mes']:,.2f} / mês")
-            st.metric("Custo Operacional Anual (8760h)", f"R$ {res_tarifa['custo_ind_ano']:,.2f} / ano")
-            st.info(f"⚡ **Consumo Anual Estimado:** {res_tarifa['consumo_ind_ano_kwh']:,.0f} kWh/ano")
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
 
-        with col_res:
-            st.markdown("### 🏠 Perfil Residencial (Grupo B)")
-            st.caption("Análise baseada na sequência de faturas e histórico mensal em kWh")
-            st.metric("Consumo Médio Mensal", f"{res_tarifa['consumo_res_media_kwh']:.2f} kWh/mês")
-            st.metric("Fatura Mensal Média", f"R$ {res_tarifa['custo_res_media_mes']:,.2f} / mês")
-            st.metric("Última Fatura Cadastrada", f"R$ {res_tarifa['custo_res_ultimo_mes']:,.2f} ({res_tarifa['consumo_res_ultimo_kwh']:.0f} kWh)")
-            st.success(f"💡 **Histórico Acumulado ({len(df)} meses):** {res_tarifa['consumo_res_total_kwh']:.0f} kWh (R$ {res_tarifa['custo_res_total']:,.2f})")
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v4
+      with:
+        python-version: "3.10"
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run Tests & Verification
+      run: |
+        python -c "import torch, sklearn, xgboost, optuna; print('Ambiente Validado!')"
+    ''', language="yaml")
