@@ -12,12 +12,22 @@ class DatabaseManager:
         self._init_db()
 
     def _init_db(self):
-        """Inicializa as tabelas do banco relacional com tratamento de chave estrangeira e seed de dados."""
+        """Inicializa as tabelas do banco relacional com validação defensiva de esquema e seed de dados."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
             # Habilita o suporte a chaves estrangeiras (Foreign Keys) no SQLite3
             cursor.execute("PRAGMA foreign_keys = ON;")
+
+            # Verificação defensiva: recria tabela faturas se o esquema antigo estiver incompatível
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='faturas'")
+            if cursor.fetchone():
+                cursor.execute("PRAGMA table_info(faturas)")
+                colunas = [col[1] for col in cursor.fetchall()]
+                if 'unidade_id' not in colunas:
+                    # Remove tabelas antigas para restruturar o schema correto
+                    cursor.execute("DROP TABLE IF EXISTS faturas")
+                    cursor.execute("DROP TABLE IF EXISTS unidades")
 
             # 1. Tabela de Unidades Consumidoras (Residencial / Industrial)
             cursor.execute("""
@@ -57,7 +67,7 @@ class DatabaseManager:
             
             if not unidade:
                 cursor.execute("INSERT INTO unidades (nome, tipo) VALUES ('casa 1', 'RESIDENCIAL')")
-                conn.commit()  # Persiste a inserção para garantir a geração do ID
+                conn.commit()  # Salva a transação para gerar o ID na chave primaria
                 cursor.execute("SELECT id FROM unidades WHERE nome = 'casa 1'")
                 unidade = cursor.fetchone()
 
