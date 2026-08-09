@@ -1,48 +1,48 @@
 # ⚡ Plataforma Integrada de Inteligência Energética (UTFPR)
 
-Plataforma avançada de previsão de carga elétrica, monitoramento estatístico de estabilidade de dados e explicabilidade de modelos (XAI), desenvolvida para aplicações em sistemas de energia elétrica na **Universidade Tecnológica Federal do Paraná (UTFPR)**.
+Sistema modular avançado de análise de consumo elétrico, previsão de demanda, monitoramento de estabilidade de dados (Data Drift) e interpretabilidade (XAI). Desenvolvido como projeto de Iniciação Científica na **Universidade Tecnológica Federal do Paraná (UTFPR)**.
 
 ---
 
-## 🚀 Funcionalidades do Sistema
+## 🏛️ Arquitetura e Módulos da Aplicação
 
-1. **Benchmarking e Validação Cruzada Aninhada (Nested CV):**
-   - Combinação de modelos de Machine Learning (XGBoost, LightGBM, CatBoost e Random Forest) via Ensemble com pesos ponderados por Softmax Negativo.
-   - Otimização de hiperparâmetros automatizada com **Optuna** (incluindo *Pruning* e busca paralela).
-   - Validação estatística de desempenho utilizando o **Teste de Diebold-Mariano** e tamanho de efeito (*Cohen's d*).
+A plataforma é dividida em três grandes perfis operacionais:
 
-2. **Deep Learning Temporal:**
-   - Implementação de arquitetura baseada em **Transformer Encoder** com atenção multi-head e máscara causal em PyTorch, suportando *Automatic Mixed Precision (AMP)*.
+1. **🏠 Módulo Residencial:**
+   - **Upload e OCR de Faturas:** Extração semi-automatizada de dados de faturas (PDF/Imagem) com etapa obrigatoria de validação humana para evitar contaminação do banco de dados.
+   - **Diagnóstico Estatístico:** Avaliação do histórico de consumo mensal, cálculo de média, desvio padrão e detecção de anomalias estatísticas (+2σ).
+   - **Motor de Recomendações:** Sistema de IA baseado em evidências que gera orientações técnicas de economia com indicação de confiança.
 
-3. **Previsão Probabilística:**
-   - Quantilagem preditiva ($P_5, P_{50}, P_{95}$) avaliada por meio de *Pinball Loss* e probabilidade de cobertura de intervalo (*PICP*).
+2. **🏭 Módulo Industrial:**
+   - **Análise Causal de Carga:** Acompanhamento da demanda horária em kW, curvas de carga e monitoramento do fator de potência.
+   - **Séries Temporais Avançadas:** Janelas deslizantes (*lags* de 24h a 336h) e tendências sazonais integradas.
 
-4. **Inteligência Artificial Explicável (XAI):**
-   - Gráficos de dependência parcial (*PDP*) e análise de importância de atributos para interpretabilidade operacional.
-
-5. **Monitoramento de Concept & Data Drift:**
-   - Cálculo automatizado do **Population Stability Index (PSI)** e monitoramento adaptativo de janelas (*ADWIN*).
-
-6. **Interface Web Interativa & MLOps:**
-   - Dashboard completo construído em **Streamlit**.
-   - Persistência relacional utilizando **SQLAlchemy** (SQLite/PostgreSQL) e rastreamento de experimentos com **MLflow**.
+3. **🔬 Módulo de Pesquisa & Experimentos (IC):**
+   - **Benchmarking & Ensemble:** Combinação de modelos XGBoost, LightGBM, CatBoost e Random Forest via *Softmax Negativo*.
+   - **Otimização de Hiperparâmetros:** Optuna com algoritmo de poda (*Pruning*) e busca paralela.
+   - **Deep Learning Temporal:** Redes **Transformer Encoder** em PyTorch com máscara causal e aceleração por *Automatic Mixed Precision (AMP)*.
+   - **Validação Estatística:** Teste de **Diebold-Mariano** e tamanho de efeito (*Cohen's d*).
+   - **Monitoramento & XAI:** Detecção de drift via **Population Stability Index (PSI)**, algoritmo **ADWIN**, gráficos de dependência parcial (**PDP**) e **SHAP**.
 
 ---
 
-## 🛠️ Tecnologias Utilizadas
+## 📂 Estrutura Modular do Código
 
-* **Linguagem:** Python 3.10+
-* **Machine Learning & Otimização:** Scikit-Learn, XGBoost, LightGBM, CatBoost, Optuna
-* **Deep Learning:** PyTorch
-* **Estatística & Métricas:** SciPy, Statsmodels, Scikit-Posthocs
-* **Interface & Visualização:** Streamlit, Plotly, Matplotlib, Seaborn
-* **Banco de Dados & MLOps:** SQLAlchemy, MLflow, Docker, GitHub Actions
-
----
-
-## ⚙️ Como Executar o Projeto Localmente
-
-1. **Clone o repositório:**
-   ```bash
-   git clone [https://github.com/seu-usuario/seu-repositorio.git](https://github.com/seu-usuario/seu-repositorio.git)
-   cd seu-repositorio
+```text
+plataforma_energia/
+├── app.py                      # Orquestrador e roteador principal
+├── requirements.txt            # Dependências do projeto
+├── README.md                   # Documentação
+│
+├── data/                       # Camada de Persistência e Parsers
+│   ├── database.py             # Gerenciador SQLAlchemy (SQLite/PostgreSQL)
+│   └── invoice_parser.py       # Extração e OCR de faturas residenciais
+│
+├── analysis/                   # Processamento e Diagnósticos
+│   └── residential.py          # Análise estatística de faturas
+│
+├── ai/                         # Inteligência e Regras de Negócio
+│   └── recommendations.py      # Motor de recomendações de eficiência
+│
+└── ui/                         # Interface do Usuário (Streamlit)
+    └── residential.py          # Renderização do módulo residencial
