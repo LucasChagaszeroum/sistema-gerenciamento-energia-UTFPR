@@ -12,24 +12,25 @@ class DatabaseManager:
     self._init_db()
 
   def _init_db(self):
-    """Inicializa as tabelas do banco com fallback automático em caso de incompatibilidade no servidor."""
+    """Inicializa as tabelas do banco com suporte a unidades, faturas e medições."""
     try:
       with sqlite3.connect(self.db_path) as conn:
         cursor = conn.cursor()
-
-        # Ativa suporte a chaves estrangeiras no SQLite
         cursor.execute("PRAGMA foreign_keys = ON;")
 
-        # 1. Tabela de Unidades Consumidoras
+        # 1. Tabela de Unidades Consumidoras (com atributos de tarifa e localidade)
         cursor.execute("""
                     CREATE TABLE IF NOT EXISTS unidades (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         nome TEXT UNIQUE NOT NULL,
-                        tipo TEXT NOT NULL
+                        tipo TEXT NOT NULL,
+                        cidade TEXT DEFAULT 'Ponta Grossa',
+                        concessionaria TEXT DEFAULT 'COPEL',
+                        tarifa REAL DEFAULT 0.85
                     )
                 """)
 
-        # 2. Tabela de Faturas Mensais com chave estrangeira vinculada a unidades
+        # 2. Tabela de Faturas Mensais de Energia
         cursor.execute("""
                     CREATE TABLE IF NOT EXISTS faturas (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,22 +53,22 @@ class DatabaseManager:
                     )
                 """)
 
-        # Insere e busca a unidade 'casa 1' para obter a chave primaria ID
+        # Garante registro da unidade residencial inicial 'casa 1'
         cursor.execute("SELECT id FROM unidades WHERE nome = 'casa 1'")
         unidade = cursor.fetchone()
 
         if not unidade:
-          cursor.execute(
-              "INSERT INTO unidades (nome, tipo) VALUES ('casa 1',"
-              " 'RESIDENCIAL')"
-          )
-          conn.commit()  # Salva a transação para gerar o ID na chave primária
+          cursor.execute("""
+                        INSERT INTO unidades (nome, tipo, cidade, concessionaria, tarifa) 
+                        VALUES ('casa 1', 'RESIDENCIAL', 'Ponta Grossa', 'COPEL', 0.85)
+                    """)
+          conn.commit()
           cursor.execute("SELECT id FROM unidades WHERE nome = 'casa 1'")
           unidade = cursor.fetchone()
 
         unid_id = unidade[0]
 
-        # Insere dados de faturas sintéticas se a tabela estiver vazia
+        # Popula histórico de faturas demonstrativas
         cursor.execute("SELECT COUNT(*) FROM faturas")
         if cursor.fetchone()[0] == 0:
           faturas_demo = [
@@ -86,34 +87,77 @@ class DatabaseManager:
               faturas_demo,
           )
 
-        conn.commit()  # Garante a gravação física no banco SQLite
+        conn.commit()
 
     except sqlite3.OperationalError:
-      # Se o arquivo .db do servidor for antigo e faltar colunas, apaga o arquivo corrompido e recria
+      # Se o esquema do arquivo local estiver desatualizado, recria o banco limpo
       if os.path.exists(self.db_path):
         os.remove(self.db_path)
       self._init_db()
 
   def listar_unidades(self, tipo: str = "RESIDENCIAL") -> pd.DataFrame:
-    """Busca unidades consumidoras cadastradas por tipo."""
+    """Retorna todas as unidades consumidoras cadastradas por tipo."""
     with sqlite3.connect(self.db_path) as conn:
       query = "SELECT * FROM unidades WHERE tipo = ?"
       return pd.read_sql_query(query, conn, params=(tipo,))
 
-  def carregar_faturas(self, unidade: str) -> pd.DataFrame:
-    """Carrega o histórico mensal de consumo e custos por unidade."""
+  def cadastrar_unidade(
+      self,
+      nome: str,
+      tipo: str,
+      cidade: str = "Ponta Grossa",
+      concessionaria: str = "COPEL",
+      tarifa: float = 0.85,
+  ) -> int:
+    """Insere uma nova unidade consumidora no SQLite3 e retorna seu ID."""
+    with sqlite3.connect(self.db_path) as conn:
+      cursor = conn.cursor()
+      cursor.execute(
+          """
+                INSERT INTO unidades (nome, tipo, cidade, concessionaria, tarifa)
+                VALUES (?, ?, ?, ?, ?)
+            """,
+          (nome, tipo, cidade, concessionaria, tarifa),
+      )
+      conn.commit()
+      return cursor.lastrowid
+
+  def carregar_faturas(self, unidade_id) -> pd.DataFrame:
+    """Carrega o histórico mensal mapeando 'mes_referencia' e 'periodo_fim' para exibição nos gráficos."""
     with sqlite3.connect(self.db_path) as conn:
       query = """
-                SELECT f.id, f.mes_referencia, f.consumo_kwh, f.valor_total
+                SELECT 
+                    f.id, 
+                    f.mes_referencia, 
+                    f.mes_referencia AS periodo_fim, 
+                    f.consumo_kwh, 
+                    f.valor_total
                 FROM faturas f
-                JOIN unidades u ON f.unidade_id = u.id
-                WHERE u.nome = ? OR u.id = ?
+                WHERE f.unidade_id = ? OR f.unidade_id = (SELECT id FROM unidades WHERE nome = ? LIMIT 1)
                 ORDER BY f.mes_referencia ASC
             """
-      return pd.read_sql_query(query, conn, params=(str(unidade), str(unidade)))
+      return pd.read_sql_query(
+          query, conn, params=(str(unidade_id), str(unidade_id))
+      )
+
+  def salvar_fatura(
+      self, unidade_id, consumo_kwh: float, valor_total: float, p_inicio, p_fim
+  ):
+    """Insere uma nova fatura confirmada no banco de dados."""
+    mes_ref = p_fim.strftime("%Y-%m") if hasattr(p_fim, "strftime") else str(p_fim)
+    with sqlite3.connect(self.db_path) as conn:
+      cursor = conn.cursor()
+      cursor.execute(
+          """
+                INSERT INTO faturas (unidade_id, mes_referencia, consumo_kwh, valor_total)
+                VALUES (?, ?, ?, ?)
+            """,
+          (unidade_id, mes_ref, consumo_kwh, valor_total),
+      )
+      conn.commit()
 
   def carregar_dados(self) -> pd.DataFrame:
-    """Lê registros da tabela de medições industriais."""
+    """Carrega dados da tabela de medições industriais."""
     with sqlite3.connect(self.db_path) as conn:
       df = pd.read_sql_query("SELECT * FROM medicoes_industriais", conn)
       if not df.empty:
@@ -121,7 +165,7 @@ class DatabaseManager:
       return df
 
   def carregar_dados_reais_ou_simulados(self):
-    """Gera dados de telemetria industrial de 720 horas para simulações."""
+    """Gera série temporal de telemetria industrial para simulações."""
     datas = pd.date_range(start="2026-07-01", periods=720, freq="h")
     horas = datas.hour
 
