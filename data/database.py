@@ -8,7 +8,7 @@ class DatabaseManager:
         self._init_db()
 
     def _init_db(self):
-        """Cria as tabelas de unidades, faturas e medicoes se nao existirem."""
+        """Cria a estrutura de tabelas relacionais e popula dados de teste iniciais."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
@@ -21,7 +21,7 @@ class DatabaseManager:
                 )
             """)
             
-            # Tabela para armazenamento de faturas de energia
+            # Tabela de faturas mensais de energia elétrica
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS faturas (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,7 +33,7 @@ class DatabaseManager:
                 )
             """)
             
-            # Tabela para mediçoes de demanda, fator de potencia e temperatura
+            # Tabela de medições industriais temporais
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS medicoes_industriais (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,22 +44,56 @@ class DatabaseManager:
                 )
             """)
             
-            # Insere uma unidade residencial padrao se a tabela estiver vazia
+            # Insere unidade residencial padrão se não existir nenhuma
             cursor.execute("SELECT COUNT(*) FROM unidades WHERE tipo = 'RESIDENCIAL'")
             if cursor.fetchone()[0] == 0:
-                cursor.execute("INSERT INTO unidades (nome, tipo) VALUES ('Casa 1', 'RESIDENCIAL')")
+                cursor.execute("INSERT INTO unidades (nome, tipo) VALUES ('casa 1', 'RESIDENCIAL')")
                 
+            # Popula histórico simulado de faturas se a tabela estiver vazia
+            cursor.execute("SELECT COUNT(*) FROM faturas")
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("SELECT id FROM unidades WHERE tipo = 'RESIDENCIAL' LIMIT 1")
+                unidade_row = cursor.fetchone()
+                if unidade_row:
+                    unid_id = unidade_row[0]
+                    faturas_demo = [
+                        (unid_id, '2026-01', 210.5, 185.30),
+                        (unid_id, '2026-02', 245.0, 215.80),
+                        (unid_id, '2026-03', 198.2, 174.50),
+                        (unid_id, '2026-04', 230.1, 202.40),
+                        (unid_id, '2026-05', 260.8, 235.10),
+                        (unid_id, '2026-06', 215.4, 189.90)
+                    ]
+                    cursor.executemany("""
+                        INSERT INTO faturas (unidade_id, mes_referencia, consumo_kwh, valor_total)
+                        VALUES (?, ?, ?, ?)
+                    """, faturas_demo)
+                    
             conn.commit()
 
     def listar_unidades(self, tipo: str = "RESIDENCIAL") -> pd.DataFrame:
-        """Retorna todas as unidades consumidoras cadastradas de um determinado tipo."""
+        """Busca todas as unidades consumidoras cadastradas por tipo."""
         with sqlite3.connect(self.db_path) as conn:
             query = "SELECT * FROM unidades WHERE tipo = ?"
-            df = pd.read_sql_query(query, conn, params=(tipo,))
-            return df
+            return pd.read_sql_query(query, conn, params=(tipo,))
+
+    def carregar_faturas(self, unidade: str) -> pd.DataFrame:
+        """
+        Retorna o histórico de faturas registradas para a unidade informada.
+        Permite consulta tanto pelo nome da unidade quanto pelo ID.
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            query = """
+                SELECT f.id, f.mes_referencia, f.consumo_kwh, f.valor_total
+                FROM faturas f
+                JOIN unidades u ON f.unidade_id = u.id
+                WHERE u.nome = ? OR u.id = ?
+                ORDER BY f.mes_referencia ASC
+            """
+            return pd.read_sql_query(query, conn, params=(str(unidade), str(unidade)))
 
     def carregar_dados(self) -> pd.DataFrame:
-        """Lê a tabela de mediçoes do banco e retorna um DataFrame do Pandas."""
+        """Lê os registros da tabela de medições industriais."""
         with sqlite3.connect(self.db_path) as conn:
             df = pd.read_sql_query("SELECT * FROM medicoes_industriais", conn)
             if not df.empty:
@@ -67,7 +101,7 @@ class DatabaseManager:
             return df
 
     def carregar_dados_reais_ou_simulados(self):
-        """Gera uma serie temporal de 30 dias (720 horas) para testes do sistema."""
+        """Gera série temporal sintética de 30 dias para testes da curva de carga."""
         datas = pd.date_range(start="2026-07-01", periods=720, freq="h")
         horas = datas.hour
 
