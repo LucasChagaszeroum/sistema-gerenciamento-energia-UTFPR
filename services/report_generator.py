@@ -1,59 +1,59 @@
 from fpdf import FPDF
 import pandas as pd
-import io
 
 class PDFReportGenerator:
-    """Módulo gerador de relatórios técnicos em PDF."""
+    """Módulo gerador de relatórios técnicos em PDF utilizando a biblioteca fpdf2."""
 
     @staticmethod
-    def gerar_relatorio_pdf(nome_unidade: str, df_faturas: pd.DataFrame, df_projeçao: pd.DataFrame) -> bytes:
+    def gerar_relatorio_pdf(nome_unidade: str, df_faturas: pd.DataFrame, df_projecao: pd.DataFrame) -> bytes:
+        # Inicializa o documento PDF em formato A4
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font("Arial", 'B', 16)
+        pdf.set_font("Helvetica", 'B', 16)
 
         # Cabeçalho Institucional
-        pdf.cell(0, 10, f"Relatório de Diagnóstico Energético - UTFPR", ln=True, align='C')
-        pdf.set_font("Arial", '', 11)
-        pdf.cell(0, 8, f"Unidade Consumidora: {nome_unidade}", ln=True, align='C')
-        pdf.ln(10)
+        pdf.cell(0, 10, "Relatorio de Diagnostico Energetico - UTFPR", new_x="LMARGIN", new_y="NEXT", align='C')
+        pdf.set_font("Helvetica", '', 11)
+        pdf.cell(0, 8, f"Unidade Consumidora: {nome_unidade}", new_x="LMARGIN", new_y="NEXT", align='C')
+        pdf.ln(5)
 
-        # Seção 1: Histórico
-        pdf.set_font("Arial", 'B', 13)
-        pdf.cell(0, 8, "1. Historico de Consumo e Custos Reais", ln=True)
-        pdf.set_font("Arial", '', 10)
+        # Seção 1: Histórico de Consumo
+        pdf.set_font("Helvetica", 'B', 12)
+        pdf.cell(0, 8, "1. Historico de Consumo e Custos Reais", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Helvetica", '', 10)
 
-        pdf.cell(40, 7, "Mes", 1)
-        pdf.cell(50, 7, "Consumo (kWh)", 1)
-        pdf.cell(50, 7, "Valor Total (R$)", 1)
-        pdf.ln()
+        # Cabeçalho da Tabela de Histórico
+        pdf.cell(40, 7, "Mes", border=1)
+        pdf.cell(50, 7, "Consumo (kWh)", border=1)
+        pdf.cell(50, 7, "Valor Total (R$)", border=1, new_x="LMARGIN", new_y="NEXT")
 
+        # Iteração sobre o DataFrame de faturas cadastradas
         for _, row in df_faturas.iterrows():
-            pdf.cell(40, 6, str(row['mes_referencia']), 1)
-            pdf.cell(50, 6, f"{row['consumo_kwh']:.1f}", 1)
-            pdf.cell(50, 6, f"R$ {row['valor_total']:.2f}", 1)
-            pdf.ln()
+            pdf.cell(40, 6, str(row['mes_referencia']), border=1)
+            pdf.cell(50, 6, f"{row['consumo_kwh']:.1f}", border=1)
+            pdf.cell(50, 6, f"R$ {row['valor_total']:.2f}", border=1, new_x="LMARGIN", new_y="NEXT")
 
-        pdf.ln(8)
+        pdf.ln(5)
 
-        # Seção 2: Projeção Preditiva
-        if not df_projeçao.empty:
-            pdf.set_font("Arial", 'B', 13)
-            pdf.cell(0, 8, "2. Simulacao e Projecao de Gastos Futuros (IA)", ln=True)
-            pdf.set_font("Arial", '', 10)
+        # Seção 2: Projeção Preditiva via Inteligência Artificial
+        if not df_projecao.empty:
+            pdf.set_font("Helvetica", 'B', 12)
+            pdf.cell(0, 8, "2. Simulacao e Projecao de Gastos Futuros (IA)", new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("Helvetica", '', 10)
 
-            pdf.cell(40, 7, "Mes Previsto", 1)
-            pdf.cell(45, 7, "Consumo (kWh)", 1)
-            pdf.cell(45, 7, "Custo Estimado", 1)
-            pdf.cell(40, 7, "Bandeira", 1)
-            pdf.ln()
+            # Cabeçalho da Tabela de Projeções
+            pdf.cell(40, 7, "Mes Previsto", border=1)
+            pdf.cell(45, 7, "Consumo (kWh)", border=1)
+            pdf.cell(45, 7, "Custo Estimado", border=1)
+            pdf.cell(40, 7, "Bandeira", border=1, new_x="LMARGIN", new_y="NEXT")
 
-            for _, row in df_projeçao.iterrows():
-                pdf.cell(40, 6, str(row['mes_referencia']), 1)
-                pdf.cell(45, 6, f"{row['consumo_projetado_kwh']:.1f}", 1)
-                pdf.cell(45, 6, f"R$ {row['custo_estimado_r$']:.2f}", 1)
-                pdf.cell(40, 6, str(row['bandeira_simulada']), 1)
-                pdf.ln()
+            # Iteração sobre o DataFrame de estimativas da IA
+            for _, row in df_projecao.iterrows():
+                pdf.cell(40, 6, str(row['mes_referencia']), border=1)
+                pdf.cell(45, 6, f"{row['consumo_projetado_kwh']:.1f}", border=1)
+                pdf.cell(45, 6, f"R$ {row['custo_estimado_r$']:.2f}", border=1)
+                pdf.cell(40, 6, str(row['bandeira_simulada']), border=1, new_x="LMARGIN", new_y="NEXT")
 
-        # Retorna o arquivo gerado em bytes para download via Streamlit
-        return pdf.output(dest='S').encode('latin-1')
+        # Converte o bytearray gerado pelo fpdf2 em um objeto bytes compativel com st.download_button
+        return bytes(pdf.output())
     
