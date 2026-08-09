@@ -8,11 +8,14 @@ class DatabaseManager:
         self._init_db()
 
     def _init_db(self):
-        """Cria a estrutura de tabelas relacionais e popula dados de teste iniciais."""
+        """Inicializa as tabelas do banco relacional SQLite3 com tratamento de erros."""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
-            # Tabela de unidades consumidoras (Residencial / Industrial)
+            # Habilita a checagem de chaves estrangeiras no SQLite
+            cursor.execute("PRAGMA foreign_keys = ON;")
+
+            # 1. Tabela de unidades consumidoras (Residencial / Industrial)
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS unidades (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -21,7 +24,7 @@ class DatabaseManager:
                 )
             """)
             
-            # Tabela de faturas mensais de energia elétrica
+            # 2. Tabela de faturas mensais
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS faturas (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,7 +36,7 @@ class DatabaseManager:
                 )
             """)
             
-            # Tabela de medições industriais temporais
+            # 3. Tabela de medições de demanda e parâmetros elétricos
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS medicoes_industriais (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,31 +47,34 @@ class DatabaseManager:
                 )
             """)
             
-            # Insere unidade residencial padrão se não existir nenhuma
-            cursor.execute("SELECT COUNT(*) FROM unidades WHERE tipo = 'RESIDENCIAL'")
-            if cursor.fetchone()[0] == 0:
+            # Garante que pelo menos uma unidade residencial exista
+            cursor.execute("SELECT id FROM unidades WHERE nome = 'casa 1'")
+            unidade = cursor.fetchone()
+            
+            if not unidade:
                 cursor.execute("INSERT INTO unidades (nome, tipo) VALUES ('casa 1', 'RESIDENCIAL')")
-                
-            # Popula histórico simulado de faturas se a tabela estiver vazia
+                conn.commit()  # Confirma a inserção para gerar o ID
+                cursor.execute("SELECT id FROM unidades WHERE nome = 'casa 1'")
+                unidade = cursor.fetchone()
+
+            unid_id = unidade[0]
+
+            # Insere dados de faturas iniciais apenas se a tabela faturas estiver vazia
             cursor.execute("SELECT COUNT(*) FROM faturas")
             if cursor.fetchone()[0] == 0:
-                cursor.execute("SELECT id FROM unidades WHERE tipo = 'RESIDENCIAL' LIMIT 1")
-                unidade_row = cursor.fetchone()
-                if unidade_row:
-                    unid_id = unidade_row[0]
-                    faturas_demo = [
-                        (unid_id, '2026-01', 210.5, 185.30),
-                        (unid_id, '2026-02', 245.0, 215.80),
-                        (unid_id, '2026-03', 198.2, 174.50),
-                        (unid_id, '2026-04', 230.1, 202.40),
-                        (unid_id, '2026-05', 260.8, 235.10),
-                        (unid_id, '2026-06', 215.4, 189.90)
-                    ]
-                    cursor.executemany("""
-                        INSERT INTO faturas (unidade_id, mes_referencia, consumo_kwh, valor_total)
-                        VALUES (?, ?, ?, ?)
-                    """, faturas_demo)
-                    
+                faturas_demo = [
+                    (unid_id, '2026-01', 210.5, 185.30),
+                    (unid_id, '2026-02', 245.0, 215.80),
+                    (unid_id, '2026-03', 198.2, 174.50),
+                    (unid_id, '2026-04', 230.1, 202.40),
+                    (unid_id, '2026-05', 260.8, 235.10),
+                    (unid_id, '2026-06', 215.4, 189.90)
+                ]
+                cursor.executemany("""
+                    INSERT INTO faturas (unidade_id, mes_referencia, consumo_kwh, valor_total)
+                    VALUES (?, ?, ?, ?)
+                """, faturas_demo)
+                
             conn.commit()
 
     def listar_unidades(self, tipo: str = "RESIDENCIAL") -> pd.DataFrame:
@@ -78,10 +84,7 @@ class DatabaseManager:
             return pd.read_sql_query(query, conn, params=(tipo,))
 
     def carregar_faturas(self, unidade: str) -> pd.DataFrame:
-        """
-        Retorna o histórico de faturas registradas para a unidade informada.
-        Permite consulta tanto pelo nome da unidade quanto pelo ID.
-        """
+        """Retorna o histórico de faturas registradas para a unidade informada."""
         with sqlite3.connect(self.db_path) as conn:
             query = """
                 SELECT f.id, f.mes_referencia, f.consumo_kwh, f.valor_total
