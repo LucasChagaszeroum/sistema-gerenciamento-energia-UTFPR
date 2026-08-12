@@ -1,22 +1,22 @@
-import streamlit as stimport streamlit as st
+import streamlit as st
 import pandas as pd
 
-# 1. Conexão com a Camada de Dados e Parsers
+# 1. Módulos de Persistência e Parsers
 from data.database import DatabaseManager
 from data.invoice_parser import InvoiceParser
 
-# 2. Conexão com Módulos Estatísticos e de Inteligência Artificial
+# 2. Módulos Estatísticos e Inteligência Artificial
 from analysis.residential import ResidentialAnalyzer
 from ai.recommendations import EnergyRecommendationEngine
 from ai.cost_predictor import EnergyCostPredictor
 
-# 3. Conexão com Serviços Tarifários e Gerador de PDF
+# 3. Módulos de Tarifação COPEL e Gerador de PDF
 from services.api_service import RealAPIService
 from services.report_generator import PDFReportGenerator
 
 
 def render_residential_ui(db: DatabaseManager):
-    """Renderiza a interface residencial conectando OCR, estatística, IA e exportação PDF."""
+    """Renderiza a interface residencial integrando OCR, estatística, IA e exportação PDF."""
     st.header("🏠 Módulo Residencial — Gestão Inteligente de Faturas (B1)")
     
     df_faturas = db.carregar_faturas_residenciais()
@@ -28,15 +28,13 @@ def render_residential_ui(db: DatabaseManager):
     st.subheader("⚙️ Operações e Leitura de Faturas")
     c_ocr, c_del, c_reset = st.columns([2, 2, 1])
 
-    # Módulo OCR: Integração com InvoiceParser
+    # Leitura automatizada via InvoiceParser
     with c_ocr:
         with st.expander("📄 Upload de Fatura (OCR / Leitura Automática)", expanded=False):
             arquivo_fatura = st.file_uploader("Envie a fatura em PDF ou Imagem", type=["pdf", "png", "jpg"])
             
             if arquivo_fatura is not None:
-                # Extrai os dados automaticamente via RegEx/Parser
                 dados_extraidos = InvoiceParser.extrair_dados_fatura(arquivo_fatura)
-                
                 st.info(f"Consumo Detectado: **{dados_extraidos['consumo_kwh']} kWh**")
                 
                 with st.form("form_confirm_ocr"):
@@ -68,10 +66,9 @@ def render_residential_ui(db: DatabaseManager):
 
     st.markdown("---")
 
-    # --- ANÁLISE ESTATÍSTICA E RECOMENDAÇÕES (ANALYSER & RECOMMENDATIONS) ---
+    # --- DIAGNÓSTICO ESTATÍSTICO E RECOMENDAÇÕES ---
     st.subheader("📊 Diagnóstico Estatístico e Recomendações de IA")
     
-    # 1. Executa o diagnóstico estatístico com o ResidentialAnalyzer
     diagnostico = ResidentialAnalyzer.analisar_historico(df_faturas)
     
     if diagnostico.get("status") == "OK":
@@ -80,7 +77,6 @@ def render_residential_ui(db: DatabaseManager):
         col_m2.metric("Média Histórica", f"{diagnostico['media_historica']:.1f} kWh")
         col_m3.metric("Variação", f"{diagnostico['variacao_percentual']:.1f}%", delta_color="inverse")
 
-        # 2. Gera as recomendações com o EnergyRecommendationEngine
         recomendas = EnergyRecommendationEngine.gerar_recomendacoes_residenciais(diagnostico)
         for rec in recomendas:
             if diagnostico["anomalia_detectada"]:
@@ -90,10 +86,9 @@ def render_residential_ui(db: DatabaseManager):
 
     st.markdown("---")
 
-    # --- PROJEÇÃO PREDITIVA (COST PREDICTOR) ---
+    # --- PROJEÇÃO PREDITIVA DE CUSTOS ---
     st.subheader("🔮 Projeção de Gastos Futuros via IA")
     
-    # Prepara DataFrame formatado para o modelo de Regressão Linear
     df_hist_formatted = df_faturas.rename(columns={"mes_ano": "mes_referencia"}).sort_values("id")
     df_projecao = EnergyCostPredictor.prever_gastos_futuros(df_hist_formatted, meses_frente=3, bandeira_futura="VERDE")
     
@@ -102,10 +97,9 @@ def render_residential_ui(db: DatabaseManager):
 
     st.markdown("---")
 
-    # --- EXPORTAÇÃO DE RELATÓRIO PDF (REPORT GENERATOR) ---
+    # --- RELATÓRIO TÉCNICO PDF ---
     st.subheader("📄 Emissão de Laudo Técnico")
     
-    # Gera os bytes do PDF em memória
     pdf_bytes = PDFReportGenerator.gerar_relatorio_pdf("Residencial — UTFPR", df_hist_formatted, df_projecao)
     
     st.download_button(
