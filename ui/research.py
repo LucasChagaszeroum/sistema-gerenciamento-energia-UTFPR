@@ -7,7 +7,8 @@ from sklearn.inspection import partial_dependence
 import xgboost as xgb
 import lightgbm as lgb
 import shap
-
+# Importa a classe de engenharia de atributos do pacote features
+from features.feature_engineering import FeatureEngineer
 # Importação dos pacotes internos da aplicação
 from data.database import DatabaseManager
 from ai.feature_engineering import FeatureEngineer  # Rota corrigida para o pacote ai/
