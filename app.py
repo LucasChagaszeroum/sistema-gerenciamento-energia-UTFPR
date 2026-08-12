@@ -1,7 +1,7 @@
 import sys
 import os
 
-# Adiciona a raiz do projeto ao PYTHONPATH
+# Adiciona o diretório raiz ao PYTHONPATH do sistema
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 import streamlit as st
@@ -10,20 +10,29 @@ from ui.residential import render_residential_ui
 from ui.industrial import render_industrial_ui
 from ui.research import render_research_ui
 
-st.set_page_config(page_title="Plataforma de Inteligência Energética UTFPR", page_icon="⚡", layout="wide")
+# Configuração da página web no Streamlit
+st.set_page_config(
+    page_title="Plataforma Integrada de Inteligência Energética — UTFPR",
+    page_icon="⚡",
+    layout="wide"
+)
 
+# Inicializa o banco de dados SQLite
 db = DatabaseManager()
 
+# Gerenciamento de estado de navegação
 if 'perfil' not in st.session_state:
     st.session_state['perfil'] = None
 
+# Barra Lateral
 st.sidebar.title("⚡ Inteligência Energética")
-if st.sidebar.button("🏠 Página Inicial"):
+if st.sidebar.button("🏠 Página Inicial", use_container_width=True):
     st.session_state['perfil'] = None
     st.rerun()
 
 perfil_atual = st.session_state['perfil']
 
+# Roteamento de telas
 if perfil_atual is None:
     st.title("⚡ Plataforma Integrada de Inteligência Energética — UTFPR")
     st.markdown("### Selecione o perfil de operação:")
@@ -32,21 +41,21 @@ if perfil_atual is None:
 
     with col1:
         st.info("### 🏠 RESIDENCIAL")
-        st.write("Gestão de faturas, histórico mensal de consumo, detecção de anomalias e recomendações de economia.")
+        st.write("Gestão de faturas (B1), leitura via OCR, diagnósticos estatísticos, recomendações de IA e laudo em PDF.")
         if st.button("Acessar Residencial", use_container_width=True):
             st.session_state['perfil'] = "RESIDENCIAL"
             st.rerun()
 
     with col2:
         st.warning("### 🏭 INDUSTRIAL")
-        st.write("Monitoramento de demanda horária, fator de potência, curvas de carga e prevenção de multas.")
+        st.write("Telemetria de demanda horária em kW, fator de potência, curvas de carga e prevenção de multas da ANEEL.")
         if st.button("Acessar Industrial", use_container_width=True):
             st.session_state['perfil'] = "INDUSTRIAL"
             st.rerun()
 
     with col3:
         st.success("### 🔬 PESQUISA (IC)")
-        st.write("Modelos preditivos, Ensemble, Transformers PyTorch, SHAP, Drift (PSI) e validação Diebold-Mariano.")
+        st.write("Modelos em Ensemble, previsão quantílica, XAI (SHAP/PDP), Data Drift (PSI) e teste de Diebold-Mariano.")
         if st.button("Acessar Pesquisa", use_container_width=True):
             st.session_state['perfil'] = "PESQUISA"
             st.rerun()

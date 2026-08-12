@@ -1,107 +1,116 @@
-import streamlit as st
+import streamlit as stimport streamlit as st
 import pandas as pd
+
+# 1. Conexão com a Camada de Dados e Parsers
 from data.database import DatabaseManager
+from data.invoice_parser import InvoiceParser
+
+# 2. Conexão com Módulos Estatísticos e de Inteligência Artificial
+from analysis.residential import ResidentialAnalyzer
+from ai.recommendations import EnergyRecommendationEngine
+from ai.cost_predictor import EnergyCostPredictor
+
+# 3. Conexão com Serviços Tarifários e Gerador de PDF
 from services.api_service import RealAPIService
+from services.report_generator import PDFReportGenerator
+
 
 def render_residential_ui(db: DatabaseManager):
-    """Renderiza a interface do Módulo Residencial com opções de gestão de faturas (CRUD) e Reset."""
-    st.header("🏠 Módulo Residencial — Gestão de Consumo & Faturas (B1)")
+    """Renderiza a interface residencial conectando OCR, estatística, IA e exportação PDF."""
+    st.header("🏠 Módulo Residencial — Gestão Inteligente de Faturas (B1)")
     
-    # 1. Carrega o histórico atual de faturas do banco
     df_faturas = db.carregar_faturas_residenciais()
-    
-    # Se estiver vazio na primeira execução, popula com os dados padrões
     if df_faturas.empty:
         db.resetar_faturas_residenciais()
         df_faturas = db.carregar_faturas_residenciais()
 
-    # --- BLOCO DE AÇÕES: ADICIONAR, REMOVER E RESETAR ---
-    st.subheader("⚙️ Painel de Gerenciamento de Faturas")
-    
-    col_add, col_del, col_reset = st.columns([2, 2, 1])
+    # --- ABA DE AÇÕES E OCR DE FATURAS ---
+    st.subheader("⚙️ Operações e Leitura de Faturas")
+    c_ocr, c_del, c_reset = st.columns([2, 2, 1])
 
-    # AÇÃO 1: Adicionar Nova Fatura
-    with col_add:
-        with st.expander("➕ Adicionar Nova Fatura", expanded=False):
-            with st.form("form_add_fatura", clear_on_submit=True):
-                mes_input = st.text_input("Mês/Ano (ex: 2026-05)", value="2026-05")
-                consumo_input = st.number_input("Consumo (kWh)", min_value=1.0, value=300.0, step=10.0)
-                bandeira_input = st.selectbox("Bandeira Tarifária", ["VERDE", "AMARELA", "VERMELHA_P1", "VERMELHA_P2"])
+    # Módulo OCR: Integração com InvoiceParser
+    with c_ocr:
+        with st.expander("📄 Upload de Fatura (OCR / Leitura Automática)", expanded=False):
+            arquivo_fatura = st.file_uploader("Envie a fatura em PDF ou Imagem", type=["pdf", "png", "jpg"])
+            
+            if arquivo_fatura is not None:
+                # Extrai os dados automaticamente via RegEx/Parser
+                dados_extraidos = InvoiceParser.extrair_dados_fatura(arquivo_fatura)
                 
-                btn_salvar = st.form_submit_button("Salvar Fatura")
+                st.info(f"Consumo Detectado: **{dados_extraidos['consumo_kwh']} kWh**")
                 
-                if btn_salvar:
-                    # Calcula o valor estimado via API Copel/ANEEL
-                    calculo = RealAPIService.calcular_fatura_copel(consumo_input, bandeira_input)
-                    valor_total = calculo["valor_total_r$"]
+                with st.form("form_confirm_ocr"):
+                    mes_ocr = st.text_input("Mês/Ano", value="2026-05")
+                    bandeira_ocr = st.selectbox("Bandeira", ["VERDE", "AMARELA", "VERMELHA_P1", "VERMELHA_P2"])
                     
-                    # Salva no SQLite
-                    db.adicionar_fatura_residencial(mes_input, consumo_input, bandeira_input, valor_total)
-                    st.success(f"Fatura de {mes_input} adicionada com sucesso!")
-                    st.rerun() # Recarrega a página para atualizar os gráficos
+                    if st.form_submit_button("Confirmar e Salvar Fatura"):
+                        calc = RealAPIService.calcular_fatura_copel(dados_extraidos['consumo_kwh'], bandeira_ocr)
+                        db.adicionar_fatura_residencial(mes_ocr, dados_extraidos['consumo_kwh'], bandeira_ocr, calc["valor_total_r$"])
+                        st.success("Fatura salva via OCR!")
+                        st.rerun()
 
-    # AÇÃO 2: Remover Fatura Existente
-    with col_del:
+    # Remoção de Faturas
+    with c_del:
         with st.expander("🗑️ Remover Fatura", expanded=False):
             if not df_faturas.empty:
-                # Prepara opções formatadas para o selectbox
-                opcoes_fatura = {
-                    f"ID {row['id']} - {row['mes_ano']} ({row['consumo_kwh']} kWh)": row['id']
-                    for _, row in df_faturas.iterrows()
-                }
-                fatura_selecionada = st.selectbox("Selecione a fatura para deletar:", list(opcoes_fatura.keys()))
-                
+                opcoes = {f"ID {row['id']} - {row['mes_ano']} ({row['consumo_kwh']} kWh)": row['id'] for _, row in df_faturas.iterrows()}
+                fat_sel = st.selectbox("Selecione para deletar:", list(opcoes.keys()))
                 if st.button("Confirmar Exclusão", type="primary"):
-                    id_para_deletar = opcoes_fatura[fatura_selecionada]
-                    db.deletar_fatura_residencial(id_para_deletar)
-                    st.warning("Fatura removida com sucesso!")
+                    db.deletar_fatura_residencial(opcoes[fat_sel])
                     st.rerun()
-            else:
-                st.info("Nenhuma fatura cadastrada para exclusão.")
 
-    # AÇÃO 3: Resetar Dados (Botão de Limpeza)
-    with col_reset:
-        st.write(" ") # Espaçamento para alinhar com os expanders
-        if st.button("🔄 Resetar", help="Restaura o histórico para os valores padrões"):
+    # Reset do Banco
+    with c_reset:
+        st.write(" ")
+        if st.button("🔄 Resetar"):
             db.resetar_faturas_residenciais()
-            st.toast("Banco de dados residencial resetado para os valores padrões!", icon="🧹")
             st.rerun()
 
     st.markdown("---")
 
-    # --- BLOCO DE DASHBOARD E EXIBIÇÃO DE DADOS ---
-    st.subheader("📊 Resumo do Histórico Residencial")
+    # --- ANÁLISE ESTATÍSTICA E RECOMENDAÇÕES (ANALYSER & RECOMMENDATIONS) ---
+    st.subheader("📊 Diagnóstico Estatístico e Recomendações de IA")
+    
+    # 1. Executa o diagnóstico estatístico com o ResidentialAnalyzer
+    diagnostico = ResidentialAnalyzer.analisar_historico(df_faturas)
+    
+    if diagnostico.get("status") == "OK":
+        col_m1, col_m2, col_m3 = st.columns(3)
+        col_m1.metric("Consumo Atual", f"{diagnostico['consumo_atual']:.1f} kWh")
+        col_m2.metric("Média Histórica", f"{diagnostico['media_historica']:.1f} kWh")
+        col_m3.metric("Variação", f"{diagnostico['variacao_percentual']:.1f}%", delta_color="inverse")
 
-    if not df_faturas.empty:
-        # Métricas Consolidadas
-        m1, m2, m3, m4 = st.columns(4)
-        total_kwh = df_faturas["consumo_kwh"].sum()
-        total_gasto = df_faturas["valor_total"].sum()
-        media_kwh = df_faturas["consumo_kwh"].mean()
-        media_gasto = df_faturas["valor_total"].mean()
+        # 2. Gera as recomendações com o EnergyRecommendationEngine
+        recomendas = EnergyRecommendationEngine.gerar_recomendacoes_residenciais(diagnostico)
+        for rec in recomendas:
+            if diagnostico["anomalia_detectada"]:
+                st.error(f"⚠️ **{rec['categoria']}** (Confiança: {rec['confianca']}%)\n\n{rec['recomendacao']}")
+            else:
+                st.success(f"💡 **{rec['categoria']}** (Confiança: {rec['confianca']}%)\n\n{rec['recomendacao']}")
 
-        m1.metric("Consumo Acumulado", f"{total_kwh:,.1f} kWh")
-        m2.metric("Gasto Acumulado", f"R$ {total_gasto:,.2f}")
-        m3.metric("Média Mensal (kWh)", f"{media_kwh:.1f} kWh")
-        m4.metric("Média Mensal (R$)", f"R$ {media_gasto:,.2f}")
+    st.markdown("---")
 
-        # Tabela e Gráfico
-        st.subheader("📈 Evolução de Consumo e Custos")
-        
-        tab1, tab2 = st.tabs(["📊 Gráfico de Consumo", "📋 Tabela Detalhada"])
-        
-        with tab1:
-            # Gráfico de barras simples usando o próprio Streamlit
-            df_chart = df_faturas.sort_values(by="id", ascending=True)
-            st.bar_chart(df_chart.set_index("mes_ano")[["consumo_kwh", "valor_total"]])
-            
-        with tab2:
-            st.dataframe(
-                df_faturas.style.format({
-                    "consumo_kwh": "{:.1f} kWh",
-                    "valor_total": "R$ {:.2f}"
-                }),
-                use_container_width=True
-            )
-    else:
-        st.info("Nenhuma fatura encontrada. Utilize o painel acima para adicionar ou clique em Resetar.")
+    # --- PROJEÇÃO PREDITIVA (COST PREDICTOR) ---
+    st.subheader("🔮 Projeção de Gastos Futuros via IA")
+    
+    # Prepara DataFrame formatado para o modelo de Regressão Linear
+    df_hist_formatted = df_faturas.rename(columns={"mes_ano": "mes_referencia"}).sort_values("id")
+    df_projecao = EnergyCostPredictor.prever_gastos_futuros(df_hist_formatted, meses_frente=3, bandeira_futura="VERDE")
+    
+    if not df_projecao.empty:
+        st.dataframe(df_projecao.style.format({"consumo_projetado_kwh": "{:.1f} kWh", "custo_estimado_r$": "R$ {:.2f}"}), use_container_width=True)
+
+    st.markdown("---")
+
+    # --- EXPORTAÇÃO DE RELATÓRIO PDF (REPORT GENERATOR) ---
+    st.subheader("📄 Emissão de Laudo Técnico")
+    
+    # Gera os bytes do PDF em memória
+    pdf_bytes = PDFReportGenerator.gerar_relatorio_pdf("Residencial — UTFPR", df_hist_formatted, df_projecao)
+    
+    st.download_button(
+        label="📥 Baixar Relatório de Diagnóstico em PDF",
+        data=pdf_bytes,
+        file_name="diagnostico_energetico_utfpr.pdf",
+        mime="application/pdf"
+    )
