@@ -100,8 +100,7 @@ def render_residential_ui(db: DatabaseManager):
     # --- RELATÓRIO TÉCNICO PDF ---
     st.subheader("📄 Emissão de Laudo Técnico")
     
-    pdf_bytes = PDFReportGenerator.gerar_relatorio_pdf("Residencial — UTFPR", df_hist_formatted, df_projecao)
-    
+    pdf_bytes = PDFReportGenerator.gerar_relatorio_pdf("Residencial - UTFPR", df_hist_formatted, df_projecao)
     st.download_button(
         label="📥 Baixar Relatório de Diagnóstico em PDF",
         data=pdf_bytes,
