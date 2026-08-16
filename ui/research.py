@@ -21,6 +21,7 @@ def calcular_pinball_loss(
 ) -> float:
     """Calcula a perda Pinball para avaliação metrológica de quantis (ex: P5, P95)."""
     erro = y_true - y_pred
+    # Retorna o erro ponderado pelo quantil desejado
     return float(np.mean(np.maximum(alpha * erro, (alpha - 1) * erro)))
 
 
@@ -207,9 +208,15 @@ def render_research_ui(db: DatabaseManager):
                 idx_feature = cols_x.index("interacao_temp_hora")
                 pdp_results = partial_dependence(model, X, features=[idx_feature])
 
-                # Compatibilização de chaves entre versões do Scikit-Learn
-                grid_vals = pdp_results.get("grid_values", pdp_results.get("values"))[0]
-                avg_preds = pdp_results["average"][0]
+                # Compatibilidade tratada entre versões do Scikit-Learn
+                if "grid_values" in pdp_results:
+                    grid_vals = pdp_results["grid_values"][0]
+                elif "values" in pdp_results:
+                    grid_vals = pdp_results["values"][0]
+                else:
+                    grid_vals = pdp_results[1][0]  # Retorno estilo tupla em versões antigas
+
+                avg_preds = pdp_results["average"][0] if "average" in pdp_results else pdp_results[0][0]
 
                 fig_pdp, ax_pdp = plt.subplots(figsize=(8, 4))
                 ax_pdp.plot(grid_vals, avg_preds, color="tab:blue", lw=2)
