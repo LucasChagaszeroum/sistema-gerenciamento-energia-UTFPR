@@ -1,25 +1,28 @@
-# === INTERFACE E DADOS ===
+# === REPOSITÓRIOS EXTRAS (PYTORCH CPU LEVE) ===
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+# === INTERFACE E TRATAMENTO DE DADOS ===
 streamlit
 pandas
 numpy
+
+# === LEITURA DE ARQUIVOS E RELATÓRIOS ===
+pypdf
+fpdf2
+requests
 
 # === MACHINE LEARNING E ENSEMBLE ===
 scikit-learn
 xgboost
 lightgbm
-
-# === DEEP LEARNING (CPU LEVE PARA NUVEM) ===
---extra-index-url https://download.pytorch.org/whl/cpu
 torch
 
-# === ESTATÍSTICA E XAI ===
+# === ESTATÍSTICA, OTIMIZAÇÃO E XAI ===
 scipy
 statsmodels
 optuna
 shap
 
-# === VISUALIZAÇÃO E RELATÓRIOS ===
+# === VISUALIZAÇÃO GRÁFICA ===
 matplotlib
 plotly
-fpdf2
-requests
