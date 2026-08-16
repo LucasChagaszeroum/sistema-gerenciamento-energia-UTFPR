@@ -1,74 +1,79 @@
-import unicodedata
 from fpdf import FPDF
-import pandas as pd
+from datetime import datetime
 
 class PDFReportGenerator:
     """
-    Classe utilitária para formatação e exportação de laudos técnicos em PDF.
-    Aplica tratamento de codificação Latin-1 e busca defensiva de chaves do Pandas.
+    Classe responsável pela geração automatizada de relatórios e laudos técnicos
+    de eficiência energética em formato PDF.
     """
+    def __init__(self):
+        # Inicializa a estrutura base do documento FPDF
+        self.pdf = FPDF(orientation='P', unit='mm', format='A4')
+        self.pdf.set_auto_page_break(auto=True, margin=15)
 
-    @staticmethod
-    def sanitizar_texto(texto: str) -> str:
-        """Converte caracteres Unicode incompatíveis para o padrão aceito pelo FPDF."""
-        if not isinstance(texto, str):
-            texto = str(texto)
-            
-        substituicoes = {
-            "—": "-", "–": "-", "“": '"', "”": '"', "’": "'", "…": "...", "ª": "a.", "º": "o."
-        }
-        for original, substituto in substituicoes.items():
-            texto = texto.replace(original, substituto)
-            
-        return texto.encode('latin-1', 'replace').decode('latin-1')
-
-    @staticmethod
-    def gerar_relatorio_pdf(nome_unidade: str, df_historico: pd.DataFrame, df_projecao: pd.DataFrame) -> bytes:
-        """Gera o laudo de diagnóstico de energia em PDF para download no Streamlit."""
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Helvetica", size=12)
-
-        # Cabeçalho do Laudo Técnico
-        unidade_limpa = PDFReportGenerator.sanitizar_texto(nome_unidade)
-        pdf.set_font("Helvetica", 'B', 16)
-        pdf.cell(0, 10, PDFReportGenerator.sanitizar_texto("SISTEMA DE GESTÃO DE ENERGIA - UTFPR"), new_x="LMARGIN", new_y="NEXT", align='C')
+    def gerar_laudo_residencial(self, dados: dict) -> bytes:
+        """
+        Gera o laudo técnico do Módulo Residencial (Grupo B) e retorna os bytes do PDF.
+        """
+        self.pdf.add_page()
         
-        pdf.set_font("Helvetica", size=12)
-        pdf.cell(0, 8, f"Unidade Consumidora: {unidade_limpa}", new_x="LMARGIN", new_y="NEXT", align='C')
-        pdf.ln(5)
+        # 1. CABEÇALHO DO LAUDO TÉCNICO
+        self.pdf.set_font("Helvetica", style="B", size=16)
+        self.pdf.cell(0, 10, "LAUDO TÉCNICO DE EFICIÊNCIA ENERGÉTICA", ln=True, align="C")
+        self.pdf.set_font("Helvetica", style="I", size=10)
+        self.pdf.cell(0, 6, f"Módulo: {dados.get('modulo', 'Residencial B1')} | Emissão: {datetime.now().strftime('%d/%m/%Y %H:%M')}", ln=True, align="C")
+        self.pdf.ln(8)
 
-        # 1. Histórico de Consumo Faturado
-        pdf.set_font("Helvetica", 'B', 12)
-        pdf.cell(0, 8, PDFReportGenerator.sanitizar_texto("1. Histórico de Consumo Faturado"), new_x="LMARGIN", new_y="NEXT", align='L')
-        pdf.set_font("Helvetica", size=10)
+        # 2. RESUMO EXECUTIVO E MÉTRICAS
+        self.pdf.set_font("Helvetica", style="B", size=12)
+        self.pdf.cell(0, 8, "1. Resumo do Consumo Acumulado", ln=True)
+        self.pdf.set_font("Helvetica", size=10)
+        
+        media_kwh = dados.get("media_kwh", 0.0)
+        total_gasto = dados.get("total_gasto", 0.0)
+        
+        self.pdf.cell(0, 6, f"- Consumo Médio Mensal: {media_kwh:.1f} kWh", ln=True)
+        self.pdf.cell(0, 6, f"- Custo Total Acumulado: R$ {total_gasto:.2f}", ln=True)
+        self.pdf.cell(0, 6, f"- Meta de Referência (Padrão Econômico): 150.0 kWh/mês", ln=True)
+        self.pdf.ln(6)
 
-        if not df_historico.empty:
-            for _, row in df_historico.iterrows():
-                # Busca flexível usando .get() para prevenir KeyError em diferentes padrões de nome
-                mes = row.get('mes_referencia', row.get('mes_ano', 'Mês Atual'))
-                consumo = row.get('consumo_kwh', 0.0)
-                valor = row.get('valor_total_r$', row.get('valor_total', 0.0))
-                
-                linha_txt = f"Mês: {mes} | Consumo: {consumo:.1f} kWh | Valor: R$ {valor:.2f}"
-                pdf.cell(0, 6, PDFReportGenerator.sanitizar_texto(linha_txt), new_x="LMARGIN", new_y="NEXT", align='L')
+        # 3. RECOMENDAÇÕES DE EFICIÊNCIA ENERGÉTICA (IA)
+        self.pdf.set_font("Helvetica", style="B", size=12)
+        self.pdf.cell(0, 8, "2. Diagnósticos e Recomendações Técnicas", ln=True)
+        self.pdf.set_font("Helvetica", size=10)
+        
+        recomendacoes = dados.get("recomendacoes", [])
+        if recomendacoes:
+            for rec in recomendacoes:
+                # Sanitização de marcações markdown/emojis para evitar erros de encoding no FPDF
+                texto_limpo = rec.replace("**", "").replace("⚠️", "[ALERTA]").replace("✅", "[OK]").replace("💡", "[DICA]").replace("📈", "[VARIAÇÃO]")
+                self.pdf.multi_cell(0, 6, f"• {texto_limpo}")
+                self.pdf.ln(2)
+        else:
+            self.pdf.cell(0, 6, "Nenhum diagnóstico registrado até o momento.", ln=True)
+            
+        self.pdf.ln(6)
 
-        pdf.ln(5)
+        # 4. TABELA DE FATURAS PROCESSADAS
+        self.pdf.set_font("Helvetica", style="B", size=12)
+        self.pdf.cell(0, 8, "3. Histórico de Faturas Registradas", ln=True)
+        
+        # Cabeçalho da Tabela
+        self.pdf.set_font("Helvetica", style="B", size=9)
+        self.pdf.cell(35, 7, "Mês/Ano", border=1, align="C")
+        self.pdf.cell(45, 7, "Consumo (kWh)", border=1, align="C")
+        self.pdf.cell(45, 7, "Valor Total (R$)", border=1, align="C")
+        self.pdf.cell(55, 7, "Bandeira Tarifária", border=1, align="C", ln=True)
 
-        # 2. Projeções Preditivas
-        pdf.set_font("Helvetica", 'B', 12)
-        pdf.cell(0, 8, PDFReportGenerator.sanitizar_texto("2. Projeção de Gastos (Próximos Meses)"), new_x="LMARGIN", new_y="NEXT", align='L')
-        pdf.set_font("Helvetica", size=10)
+        # Linhas da Tabela
+        self.pdf.set_font("Helvetica", size=9)
+        faturas = dados.get("faturas", [])
+        for fatura in faturas:
+            self.pdf.cell(35, 6, str(fatura.get("mes_ano", "-")), border=1, align="C")
+            self.pdf.cell(45, 6, f"{fatura.get('consumo_kwh', 0.0):.1f} kWh", border=1, align="C")
+            self.pdf.cell(45, 6, f"R$ {fatura.get('valor_total', 0.0):.2f}", border=1, align="C")
+            self.pdf.cell(55, 6, str(fatura.get("bandeira", "Verde")), border=1, align="C", ln=True)
 
-        if not df_projecao.empty:
-            for _, row in df_projecao.iterrows():
-                mes_futuro = row.get('mes_futuro', 'Próximo Mês')
-                consumo_proj = row.get('consumo_projetado_kwh', 0.0)
-                custo_est = row.get('custo_estimado_r$', row.get('valor_total', 0.0))
-                
-                proj_txt = f"Mês Futuro: {mes_futuro} | Consumo Estimado: {consumo_proj:.1f} kWh | Custo Estimado: R$ {custo_est:.2f}"
-                pdf.cell(0, 6, PDFReportGenerator.sanitizar_texto(proj_txt), new_x="LMARGIN", new_y="NEXT", align='L')
-
-        # Retorna o relatório formatado em array de bytes
-        return bytes(pdf.output())
+        # Retorna o PDF compilado em bytes (compatível com o st.download_button do Streamlit)
+        return bytes(self.pdf.output())
     
