@@ -2,6 +2,7 @@ import lightgbm as lgb
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go  # Adicionado para gráficos interativos de bandas de incerteza
 import shap
 import streamlit as st
 import xgboost as xgb
@@ -176,6 +177,77 @@ def render_research_ui(db: DatabaseManager):
             c1.metric("Pinball Loss (P5)", f"{loss_p5:.4f}")
             c2.metric("Pinball Loss (P95)", f"{loss_p95:.4f}")
             c3.metric("Cobertura de Intervalo (PICP)", f"{picp:.2f}%")
+
+            # --- ADIÇÕES DE VISUALIZAÇÃO E DIAGNÓSTICO METROLÓGICO ---
+            
+            # Recorte visual das primeiras 168 horas (1 semana de teste)
+            n_amostras = min(168, len(y_te))
+            eixo_x = list(range(n_amostras))
+
+            # Construção do gráfico de intervalo de predição com Plotly
+            fig_quantis = go.Figure()
+
+            # Adiciona o limite superior (P95)
+            fig_quantis.add_trace(
+                go.Scatter(
+                    x=eixo_x,
+                    y=p95[:n_amostras],
+                    mode="lines",
+                    line=dict(width=0),
+                    showlegend=False,
+                    name="P95 (Limite Sup.)",
+                )
+            )
+
+            # Preenche a área até o limite inferior (P5) criando a faixa de incerteza
+            fig_quantis.add_trace(
+                go.Scatter(
+                    x=eixo_x,
+                    y=p5[:n_amostras],
+                    mode="lines",
+                    line=dict(width=0),
+                    fill="tonexty",
+                    fillcolor="rgba(0, 102, 204, 0.2)",
+                    name="Intervalo de Confiança 90% (P5 - P95)",
+                )
+            )
+
+            # Plota a curva real da demanda medida
+            fig_quantis.add_trace(
+                go.Scatter(
+                    x=eixo_x,
+                    y=y_te[:n_amostras],
+                    mode="lines",
+                    line=dict(color="black", width=2),
+                    name="Demanda Real (kW)",
+                )
+            )
+
+            fig_quantis.update_layout(
+                title=f"Banda de Incerteza Probabilística (Janela de {n_amostras} Horas)",
+                xaxis_title="Horas do Conjunto de Teste",
+                yaxis_title="Demanda de Carga (kW)",
+                hovermode="x unified",
+                legend=dict(orient="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                margin=dict(l=20, r=20, t=50, b=20),
+            )
+
+            st.plotly_chart(fig_quantis, use_container_width=True)
+
+            # Diagnóstico estatístico automatizado para o relatório da IC
+            st.markdown("---")
+            st.markdown("### 📝 Parecer Metrológico do Modelo Quantílico")
+            if picp < 85.0:
+                st.warning(
+                    f"⚠️ **Intervalo de Predição Estreito:** A Cobertura Empírica ($PICP = {picp:.2f}\\%$) ficou abaixo da meta nominal "
+                    f"teórica de $90\\%$ ($P_{{95}} - P_5$). Isso significa que o modelo está subestimando a variação da demanda em picos. "
+                    f"**Recomendação de IC:** Revisar os hiperparâmetros de regularização do LightGBM ou incorporar features de volatilidade instantânea."
+                )
+            else:
+                st.success(
+                    f"✅ **Intervalo Metrológico Validado:** A Cobertura Empírica ($PICP = {picp:.2f}\\%$) está compatível com a meta teórica de $90\\%$, "
+                    f"oferecendo limites seguros para decisões de contratação de demanda."
+                )
 
     # =========================================================================
     # EXPERIMENTO 3: INTERPRETABILIDADE (XAI)
