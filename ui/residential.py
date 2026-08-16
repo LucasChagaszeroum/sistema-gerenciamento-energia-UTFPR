@@ -5,7 +5,7 @@ import re
 import numpy as np
 from datetime import datetime
 
-# Importações defensivas dos serviços internos do projeto
+# Importações defensivas dos serviços internos do projeto de IC
 try:
     from services.report_generator import PDFReportGenerator
 except ImportError:
@@ -19,21 +19,31 @@ except ImportError:
 
 def extrair_dados_pdf_copel(pdf_file) -> dict:
     """
-    Lê o PDF da fatura via pypdf e extrai Mês/Ano, Consumo (kWh) e Valor Total (R$) via Regex.
+    Lê o PDF da fatura via pypdf e extrai Mês/Ano (MM/20XX), Consumo (kWh) e Valor Total (R$).
+    Utiliza delimitadores de borda (\b) para evitar a captura incorreta de CNPJs.
     """
     reader = pypdf.PdfReader(pdf_file)
     texto_completo = ""
+    
+    # Concatena o texto extraído de todas as páginas da fatura
     for page in reader.pages:
         texto_completo += page.extract_text() or ""
 
-    # Padrões Regex para faturas de energia
-    match_mes = re.search(r'(\d{2}/\d{4})', texto_completo)
+    # 1. Regex de Mês/Ano Refinado:
+    # \b(0[1-9]|1[0-2]) -> Valida rigorosamente apenas meses de 01 a 12
+    # /(20\d{2})\b      -> Valida anos de 2000 a 2099, ignorando sufixos /0001 de CNPJ
+    match_mes = re.search(r'\b(0[1-9]|1[0-2])/(20\d{2})\b', texto_completo)
+
+    # 2. Regex de Consumo (kWh)
     match_kwh = re.search(r'(\d+[\.,]?\d*)\s*kWh', texto_completo, re.IGNORECASE)
+
+    # 3. Regex de Valor Total (R$)
     match_valor = re.search(r'R\$\s*(\d+[\.,]\d{2})', texto_completo)
 
-    mes_ano = match_mes.group(1) if match_mes else datetime.now().strftime("%m/%Y")
+    # Atribuição dos valores extraídos com tratamento de contingência (fallback)
+    mes_ano = match_mes.group(0) if match_mes else datetime.now().strftime("%m/%Y")
     consumo_kwh = float(match_kwh.group(1).replace('.', '').replace(',', '.')) if match_kwh else 180.0
-    valor_total = float(match_valor.group(1).replace('.', '').replace(',', '.')) if match_valor else 145.50
+    valor_total = float(match_valor.group(1).replace('.', '').replace(',', '.')) if match_valor else 146.55
 
     return {
         "mes_ano": mes_ano,
@@ -45,27 +55,26 @@ def extrair_dados_pdf_copel(pdf_file) -> dict:
 
 def executar_salvamento_banco(db, mes_ano, consumo_kwh, valor_total, bandeira):
     """
-    Função auxiliar com inspeção dinâmica para contornar assinaturas
-    diferentes do método salvar_fatura() no DatabaseManager.
+    Função auxiliar para salvar faturas no banco SQLite (DatabaseManager)
+    tratando dinamicamente variações de assinaturas de métodos.
     """
     if db is None or not hasattr(db, "salvar_fatura"):
         return
 
     try:
-        # Tentativa 1: Chamada simples com 4 argumentos
+        # Chamada padrão (4 argumentos)
         db.salvar_fatura(mes_ano, consumo_kwh, valor_total, bandeira)
     except TypeError:
         try:
-            # Tentativa 2: Assinatura extendida com datas de período (p_inicio, p_fim)
-            # Passa mes_ano como referência inicial e final padrão
+            # Chamada estendida (com período de faturamento p_inicio e p_fim)
             db.salvar_fatura(mes_ano, consumo_kwh, valor_total, bandeira, mes_ano)
         except Exception as err:
-            st.warning(f"Salvo no estado da sessão, mas falhou ao gravar no banco SQLite: {err}")
+            st.warning(f"Fatura salva na sessão, mas falhou ao gravar no SQLite: {err}")
 
 
 def gerar_recomendacoes_ia(df_faturas: pd.DataFrame) -> list:
     """
-    Motor de Recomendações de IA / Regras para otimização do Padrão Econômico (B1).
+    Motor de Recomendações baseado em regras para otimização da tarifa residencial (B1).
     """
     recomendacoes = []
     
@@ -73,9 +82,9 @@ def gerar_recomendacoes_ia(df_faturas: pd.DataFrame) -> list:
         return recomendacoes
 
     media_consumo = df_faturas["consumo_kwh"].mean()
-    meta_economica = 150.0  # Meta de referência para o padrão econômico (kWh/mês)
+    meta_economica = 150.0  # Meta de referência (kWh/mês)
 
-    # Regra 1: Avaliação de Meta de Consumo
+    # Regra 1: Avaliação em relação à meta de consumo
     if media_consumo > meta_economica:
         excesso = media_consumo - meta_economica
         recomendacoes.append(
@@ -87,23 +96,23 @@ def gerar_recomendacoes_ia(df_faturas: pd.DataFrame) -> list:
             f"✅ **Excelente Desempenho:** Sua média ({media_consumo:.1f} kWh/mês) está dentro da meta econômica de 150 kWh!"
         )
 
-    # Regra 2: Análise de Custo Médio por kWh
+    # Regra 2: Análise da tarifa efetiva ponderada (R$/kWh)
     df_faturas["tarifa_efetiva"] = df_faturas["valor_total"] / np.maximum(df_faturas["consumo_kwh"], 1)
     tarifa_media = df_faturas["tarifa_efetiva"].mean()
     
     if tarifa_media > 0.85:
         recomendacoes.append(
-            f"💡 **Impacto Tarifário:** O custo médio faturado está alto (R$ {tarifa_media:.2f}/kWh). "
-            "Verifique o peso dos impostos (ICMS/PIS/COFINS) e evite horários de pico de uso térmico."
+            f"💡 **Impacto Tarifário:** O custo médio faturado está elevado (R$ {tarifa_media:.2f}/kWh). "
+            "Verifique a incidência de impostos e bandeiras tarifárias."
         )
 
-    # Regra 3: Variabilidade de Consumo (Desvio Padrão)
+    # Regra 3: Variabilidade do consumo (Desvio Padrão)
     if len(df_faturas) >= 2:
         std_consumo = df_faturas["consumo_kwh"].std()
         if std_consumo > 40.0:
             recomendacoes.append(
-                f"📈 **Instabilidade Detectada:** Variação elevada entre meses (Desvio Padrão: {std_consumo:.1f} kWh). "
-                "Sugere-se manter rotinas sazonais de uso de eletrodomésticos."
+                f"📈 **Instabilidade Detectada:** Alta oscilação entre os meses (Desvio Padrão: {std_consumo:.1f} kWh). "
+                "Recomenda-se investigar picos sazonais de uso."
             )
 
     return recomendacoes
@@ -111,22 +120,22 @@ def gerar_recomendacoes_ia(df_faturas: pd.DataFrame) -> list:
 
 def render_residential_ui(db=None):
     """
-    Interface Principal do Módulo Residencial (Grupo B) reunindo todas as funcionalidades.
+    Interface Principal do Módulo Residencial (Grupo B) no Streamlit.
     """
     st.title("🏠 Módulo Residencial - Grupo B")
     st.caption("Plataforma de Gestão de Faturas, OCR, Diagnósticos Estatísticos, IA e Laudos Técnicos.")
 
-    # Inicialização da lista de faturas no estado da sessão
+    # Inicialização do estado da sessão (Session State)
     if "faturas_residenciais" not in st.session_state:
         st.session_state.faturas_residenciais = []
 
     # =========================================================================
-    # 1. GESTÃO DE FATURAS (CADASTRO VIA OCR / MANUAL)
+    # 1. ENTRADA DE DADOS (OCR / MANUAL)
     # =========================================================================
     st.subheader("📥 Entrada de Faturas")
     tab_pdf, tab_manual = st.tabs(["📄 Leitura OCR (PDF)", "✍️ Cadastro Manual"])
 
-    # Aba OCR / PDF
+    # Aba 1: Processamento via OCR
     with tab_pdf:
         uploaded_file = st.file_uploader("Faça upload da fatura em formato PDF (ex: COPEL)", type=["pdf"])
         if uploaded_file is not None:
@@ -143,10 +152,10 @@ def render_residential_ui(db=None):
                         "bandeira": dados["bandeira"]
                     }
                     
-                    # Salva no Session State do Streamlit
+                    # Atualiza o estado da aplicação
                     st.session_state.faturas_residenciais.append(nova_fatura)
                     
-                    # Executa salvamento seguro no banco SQLite
+                    # Salva no banco de dados SQLite
                     executar_salvamento_banco(
                         db, dados["mes_ano"], dados["consumo_kwh"], dados["valor_total"], dados["bandeira"]
                     )
@@ -156,7 +165,7 @@ def render_residential_ui(db=None):
                 except Exception as e:
                     st.error(f"Falha ao processar arquivo PDF: {e}")
 
-    # Aba Manual
+    # Aba 2: Entrada Manual de Faturas
     with tab_manual:
         with st.form(key="form_residencial_manual", clear_on_submit=True):
             col1, col2 = st.columns(2)
@@ -178,8 +187,6 @@ def render_residential_ui(db=None):
                     "bandeira": bandeira
                 }
                 st.session_state.faturas_residenciais.append(nova_fatura)
-                
-                # Executa salvamento seguro no banco SQLite
                 executar_salvamento_banco(db, mes_ano, consumo_kwh, valor_total, bandeira)
 
                 st.success("Fatura cadastrada com sucesso!")
@@ -188,7 +195,7 @@ def render_residential_ui(db=None):
     st.markdown("---")
 
     # =========================================================================
-    # 2. TABELA DE HISTÓRICO E EXCLUSÃO DE REGISTROS
+    # 2. HISTÓRICO E GERENCIAMENTO DE REGISTROS
     # =========================================================================
     st.subheader("📋 Histórico e Gerenciamento")
 
@@ -210,7 +217,7 @@ def render_residential_ui(db=None):
             hide_index=True
         )
 
-        # Funcionalidade de Exclusão
+        # Módulo de Exclusão de Faturas
         with st.expander("🗑️ Excluir Fatura do Histórico"):
             opcoes_exclusao = {
                 f"ID {f['id']} | Mês: {f['mes_ano']} - R$ {f['valor_total']:.2f}": f['id'] 
@@ -233,7 +240,7 @@ def render_residential_ui(db=None):
         st.markdown("---")
 
         # =========================================================================
-        # 3. DIAGNÓSTICOS ESTATÍSTICOS (Padrão Econômico 150 kWh/mês)
+        # 3. DIAGNÓSTICOS ESTATÍSTICOS
         # =========================================================================
         st.subheader("📊 Diagnósticos Estatísticos de Consumo")
 
@@ -248,14 +255,14 @@ def render_residential_ui(db=None):
         c3.metric("Desvio Padrão", f"{std_kwh:.1f} kWh")
         c4.metric("Gasto Acumulado", f"R$ {total_gasto:.2f}")
 
-        # Gráfico de Consumo vs Meta Econômica
+        # Gráfico interativo de consumo vs meta
         st.markdown("**Evolução Mensal vs. Meta Econômica (150 kWh/mês)**")
         st.bar_chart(df_faturas, x="mes_ano", y="consumo_kwh", use_container_width=True)
 
         st.markdown("---")
 
         # =========================================================================
-        # 4. RECOMENDAÇÕES DE IA E EFICIÊNCIA ENERGÉTICA
+        # 4. RECOMENDAÇÕES DE IA
         # =========================================================================
         st.subheader("🤖 Recomendações Automáticas de IA")
         
@@ -266,7 +273,7 @@ def render_residential_ui(db=None):
         st.markdown("---")
 
         # =========================================================================
-        # 5. EMISSÃO DE LAUDO TÉCNICO EM PDF
+        # 5. GERADOR DE LAUDO TÉCNICO PDF
         # =========================================================================
         st.subheader("📄 Emissão do Laudo Técnico")
         st.write("Gere o relatório em formato PDF contendo os diagnósticos estatísticos e as recomendações técnicas.")
