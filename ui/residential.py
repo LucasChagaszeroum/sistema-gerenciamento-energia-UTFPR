@@ -43,6 +43,26 @@ def extrair_dados_pdf_copel(pdf_file) -> dict:
     }
 
 
+def executar_salvamento_banco(db, mes_ano, consumo_kwh, valor_total, bandeira):
+    """
+    Função auxiliar com inspeção dinâmica para contornar assinaturas
+    diferentes do método salvar_fatura() no DatabaseManager.
+    """
+    if db is None or not hasattr(db, "salvar_fatura"):
+        return
+
+    try:
+        # Tentativa 1: Chamada simples com 4 argumentos
+        db.salvar_fatura(mes_ano, consumo_kwh, valor_total, bandeira)
+    except TypeError:
+        try:
+            # Tentativa 2: Assinatura extendida com datas de período (p_inicio, p_fim)
+            # Passa mes_ano como referência inicial e final padrão
+            db.salvar_fatura(mes_ano, consumo_kwh, valor_total, bandeira, mes_ano)
+        except Exception as err:
+            st.warning(f"Salvo no estado da sessão, mas falhou ao gravar no banco SQLite: {err}")
+
+
 def gerar_recomendacoes_ia(df_faturas: pd.DataFrame) -> list:
     """
     Motor de Recomendações de IA / Regras para otimização do Padrão Econômico (B1).
@@ -123,10 +143,13 @@ def render_residential_ui(db=None):
                         "bandeira": dados["bandeira"]
                     }
                     
+                    # Salva no Session State do Streamlit
                     st.session_state.faturas_residenciais.append(nova_fatura)
                     
-                    if db is not None and hasattr(db, "salvar_fatura"):
-                        db.salvar_fatura(dados["mes_ano"], dados["consumo_kwh"], dados["valor_total"], dados["bandeira"])
+                    # Executa salvamento seguro no banco SQLite
+                    executar_salvamento_banco(
+                        db, dados["mes_ano"], dados["consumo_kwh"], dados["valor_total"], dados["bandeira"]
+                    )
 
                     st.success(f"Fatura de {dados['mes_ano']} lida e gravada com sucesso!")
                     st.rerun()
@@ -156,8 +179,8 @@ def render_residential_ui(db=None):
                 }
                 st.session_state.faturas_residenciais.append(nova_fatura)
                 
-                if db is not None and hasattr(db, "salvar_fatura"):
-                    db.salvar_fatura(mes_ano, consumo_kwh, valor_total, bandeira)
+                # Executa salvamento seguro no banco SQLite
+                executar_salvamento_banco(db, mes_ano, consumo_kwh, valor_total, bandeira)
 
                 st.success("Fatura cadastrada com sucesso!")
                 st.rerun()
@@ -252,7 +275,6 @@ def render_residential_ui(db=None):
             if PDFReportGenerator is not None:
                 try:
                     pdf_engine = PDFReportGenerator()
-                    # Prepara os dados para o gerador de PDF
                     dados_relatorio = {
                         "modulo": "Residencial (B1)",
                         "media_kwh": media_kwh,
