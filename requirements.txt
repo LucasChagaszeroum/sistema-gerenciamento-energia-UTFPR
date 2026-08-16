@@ -1,9 +1,25 @@
+# === INTERFACE E DADOS ===
 streamlit
 pandas
 numpy
-requests
+
+# === MACHINE LEARNING E ENSEMBLE ===
 scikit-learn
-matplotlib
 xgboost
 lightgbm
+
+# === DEEP LEARNING (CPU LEVE PARA NUVEM) ===
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+
+# === ESTATÍSTICA E XAI ===
+scipy
+statsmodels
+optuna
+shap
+
+# === VISUALIZAÇÃO E RELATÓRIOS ===
+matplotlib
+plotly
 fpdf2
+requests
