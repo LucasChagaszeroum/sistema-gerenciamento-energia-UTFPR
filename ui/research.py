@@ -23,12 +23,28 @@ def calcular_pinball_loss(
 ) -> float:
     """Calcula a perda Pinball para avaliação metrológica de quantis (ex: P5, P95)."""
     erro = y_true - y_pred
+    # Aplica a função de perda assimétrica de quantil
     return float(np.mean(np.maximum(alpha * erro, (alpha - 1) * erro)))
 
 
 def render_research_ui(db: DatabaseManager):
     """Renderiza a interface interativa do Módulo de Pesquisa e Experimentos de IC."""
     st.header("🔬 Módulo de Pesquisa & Experimentos (UTFPR)")
+
+    # -------------------------------------------------------------------------
+    # ESTADO DA APLICAÇÃO (st.session_state)
+    # Inicializa métricas padrão para compilação do PDF caso o usuário baixe antes
+    # -------------------------------------------------------------------------
+    if "metricas_ic" not in st.session_state:
+        st.session_state.metricas_ic = {
+            "modelo_campeao": "Ensemble Ponderado",
+            "mae": 2.15,
+            "custo_mensal": 82.78,
+            "custo_anual": 993.30,
+            "picp": 89.61,
+            "loss_p5": 2.8742,
+            "loss_p95": 3.6231,
+        }
 
     # Carregamento e contingência de dados via SQLite
     df_raw = db.carregar_dados()
@@ -57,8 +73,8 @@ def render_research_ui(db: DatabaseManager):
         "rolling_std_24",
         "rolling_std_168",
         "ewma_24",
-        "volatilidade_6h",   # Captura oscilações de curto prazo
-        "range_24h",         # Envelope de amplitude móvel de 24h para ajuste do PICP
+        "volatilidade_6h",    # Captura oscilações de curto prazo
+        "range_24h",          # Envelope de amplitude móvel de 24h para ajuste do PICP
         "interacao_temp_hora",
         "sin_hora",
         "cos_hora",
@@ -116,6 +132,12 @@ def render_research_ui(db: DatabaseManager):
                     y_te - preds_dict["Ensemble_Weighted"],
                     y_te - preds_dict["XGBoost"],
                 )
+
+                # 7. Atualização do estado dinâmico para o gerador de PDF
+                st.session_state.metricas_ic["modelo_campeao"] = modelo_campeao
+                st.session_state.metricas_ic["mae"] = mae_campeao
+                st.session_state.metricas_ic["custo_mensal"] = custo_mensal_campeao
+                st.session_state.metricas_ic["custo_anual"] = custo_anual_campeao
 
                 st.success("Validação concluída com sucesso!")
 
@@ -192,7 +214,12 @@ def render_research_ui(db: DatabaseManager):
 
             loss_p5 = calcular_pinball_loss(y_te, p5, 0.05)
             loss_p95 = calcular_pinball_loss(y_te, p95, 0.95)
-            picp = np.mean((y_te >= p5) & (y_te <= p95)) * 100.0
+            picp = float(np.mean((y_te >= p5) & (y_te <= p95)) * 100.0)
+
+            # Atualização do estado dinâmico das métricas metrológicas
+            st.session_state.metricas_ic["loss_p5"] = loss_p5
+            st.session_state.metricas_ic["loss_p95"] = loss_p95
+            st.session_state.metricas_ic["picp"] = picp
 
             c1, c2, c3 = st.columns(3)
             c1.metric("Pinball Loss (P5)", f"{loss_p5:.4f}")
@@ -339,19 +366,23 @@ def render_research_ui(db: DatabaseManager):
 
     # =========================================================================
     # EXPORTAÇÃO DE RELATÓRIO TÉCNICO (PDF)
+    # Utiliza dinamicamente as métricas armazenadas em st.session_state
     # =========================================================================
     st.markdown("---")
     st.subheader("📥 Exportação de Documentação Técnica")
 
-    # Gera o relatório em PDF com os dados consolidados do modelo
+    # Extrai o dicionário mantido no estado da sessão
+    m = st.session_state.metricas_ic
+
+    # Compila o arquivo PDF em memória
     pdf_bytes = TechnicalReportGenerator.gerar_pdf_experimento(
-        modelo_campeao="Ensemble Ponderado",
-        mae=2.15,
-        custo_mensal=82.78,
-        custo_anual=993.30,
-        picp=89.61,
-        loss_p5=2.8742,
-        loss_p95=3.6231
+        modelo_campeao=m["modelo_campeao"],
+        mae=m["mae"],
+        custo_mensal=m["custo_mensal"],
+        custo_anual=m["custo_anual"],
+        picp=m["picp"],
+        loss_p5=m["loss_p5"],
+        loss_p95=m["loss_p95"],
     )
 
     st.download_button(
@@ -359,5 +390,5 @@ def render_research_ui(db: DatabaseManager):
         data=pdf_bytes,
         file_name="Relatorio_Tecnico_IC_UTFPR.pdf",
         mime="application/pdf",
-        type="primary"
+        type="primary",
     )

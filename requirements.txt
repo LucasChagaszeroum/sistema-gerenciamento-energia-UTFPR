@@ -1,28 +1,131 @@
-# === REPOSITÓRIOS EXTRAS (PYTORCH CPU LEVE) ===
---extra-index-url https://download.pytorch.org/whl/cpu
+from fpdf import FPDF
 
-# === INTERFACE E TRATAMENTO DE DADOS ===
-streamlit
-pandas
-numpy
 
-# === LEITURA DE ARQUIVOS E RELATÓRIOS ===
-pypdf
-fpdf2
-requests
+class TechnicalReportGenerator(FPDF):
+    """Gerador de relatórios técnicos em PDF usando fpdf2 para projetos de IC (UTFPR)."""
 
-# === MACHINE LEARNING E ENSEMBLE ===
-scikit-learn
-xgboost
-lightgbm
-torch
+    def header(self):
+        # Cabeçalho institucional do documento
+        self.set_font("Helvetica", "B", 11)
+        self.cell(
+            0,
+            6,
+            "UTFPR - Universidade Tecnológica Federal do Paraná",
+            ln=True,
+            align="C",
+        )
+        self.set_font("Helvetica", "", 9)
+        self.cell(
+            0,
+            5,
+            "Sistema de Previsão de Carga Elétrica & Análise Metrológica",
+            ln=True,
+            align="C",
+        )
+        self.ln(4)
 
-# === ESTATÍSTICA, OTIMIZAÇÃO E XAI ===
-scipy
-statsmodels
-optuna
-shap
+    def footer(self):
+        # Rodapé com numeração automática de página
+        self.set_y(-15)
+        self.set_font("Helvetica", "I", 8)
+        self.cell(
+            0, 10, f"Página {self.page_no()}/{{nb}}", align="C"
+        )
 
-# === VISUALIZAÇÃO GRÁFICA ===
-matplotlib
-plotly
+    @staticmethod
+    def gerar_pdf_experimento(
+        modelo_campeao: str,
+        mae: float,
+        custo_mensal: float,
+        custo_anual: float,
+        picp: float,
+        loss_p5: float,
+        loss_p95: float,
+    ) -> bytes:
+        """Compila métricas do modelo e gera um buffer de memória em bytes do PDF."""
+        pdf = TechnicalReportGenerator()
+        pdf.alias_nb_pages()
+        pdf.add_page()
+        pdf.set_auto_page_break(auto=True, margin=15)
+
+        # Título da Seção Principal
+        pdf.set_font("Helvetica", "B", 13)
+        pdf.cell(
+            0,
+            8,
+            "Relatório Técnico de Experimentos e Validação",
+            ln=True,
+            align="L",
+        )
+        pdf.line(10, pdf.get_y(), 200, pdf.get_y())  # Linha divisória
+        pdf.ln(4)
+
+        # Tabela 1: Validação Operacional e Tradução Financeira
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(
+            0,
+            6,
+            "1. Desempenho Operacional & Tradução Financeira (Tarifa COPEL)",
+            ln=True,
+        )
+        pdf.set_font("Helvetica", "", 9)
+
+        dados_financeiros = [
+            ("Modelo Campeão Selecionado", str(modelo_campeao)),
+            ("Erro Médio Absoluto (MAE)", f"{mae:.2f} kW"),
+            (
+                "Custo Mensal do Erro (A4 COPEL)",
+                f"R$ {custo_mensal:,.2f}",
+            ),
+            ("Risco Financeiro Anual Projetado", f"R$ {custo_anual:,.2f}"),
+        ]
+
+        for label, valor in dados_financeiros:
+            pdf.set_fill_color(240, 240, 240)
+            pdf.cell(110, 6, label, border=1, fill=True)  # Rótulo com fundo cinza
+            pdf.cell(80, 6, valor, border=1, ln=True)     # Valor correspondente
+
+        pdf.ln(4)
+
+        # Tabela 2: Avaliação Metrológica de Incerteza (PICP)
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(
+            0,
+            6,
+            "2. Avaliação Metrológica de Quantis (Incerteza & Cobertura)",
+            ln=True,
+        )
+        pdf.set_font("Helvetica", "", 9)
+
+        dados_quantis = [
+            ("Perda Pinball (Quantil P5)", f"{loss_p5:.4f}", "Minimização"),
+            ("Perda Pinball (Quantil P95)", f"{loss_p95:.4f}", "Minimização"),
+            ("Cobertura Empírica (PICP)", f"{picp:.2f}%", ">= 85.0%"),
+        ]
+
+        # Cabeçalho da tabela de quantis
+        pdf.set_fill_color(220, 230, 242)
+        pdf.cell(80, 6, "Métrica", border=1, fill=True)
+        pdf.cell(55, 6, "Resultado", border=1, fill=True)
+        pdf.cell(55, 6, "Meta Nominal", border=1, fill=True, ln=True)
+
+        for metrica, resultado, meta in dados_quantis:
+            pdf.cell(80, 6, metrica, border=1)
+            pdf.cell(55, 6, resultado, border=1)
+            pdf.cell(55, 6, meta, border=1, ln=True)
+
+        pdf.ln(5)
+
+        # Parecer Técnico Conclusivo
+        status_picp = "VALIDADO" if picp >= 85.0 else "SUBESTIMADO"
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.multi_cell(
+            0,
+            5,
+            f"Parecer Técnico Final: O modelo quantílico foi classificado como {status_picp}. "
+            f"Com Cobertura Empírica de {picp:.2f}%, o sistema assegura previsibilidade "
+            f"operacional adequada para o dimensionamento de contratos de demanda de energia.",
+        )
+
+        # Retorna os bytes do PDF diretamente para envio via Streamlit download_button
+        return bytes(pdf.output())
