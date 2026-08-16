@@ -23,6 +23,9 @@ class FeatureEngineer:
         d['rolling_std_168'] = d['demanda_kw'].shift(1).rolling(168).std()
         d['ewma_24'] = d['demanda_kw'].shift(1).ewm(span=24).mean()
 
+        # ADICIONADO: Volatilidade instantânea de curto prazo (últimas 6 horas) com shift(1)
+        d['volatilidade_6h'] = d['demanda_kw'].shift(1).rolling(6).std()
+
         # Atributos cíclicos e interações térmicas
         d['interacao_temp_hora'] = d['temperatura'] * d['data_hora'].dt.hour
         d['sin_hora'] = np.sin(2 * np.pi * d['data_hora'].dt.hour / 24.0)
@@ -32,7 +35,7 @@ class FeatureEngineer:
         d['causal_trend'] = d['demanda_kw'].shift(1).rolling(168, min_periods=24).mean()
         d['causal_seasonal_24'] = d['demanda_kw'].shift(1) - d['demanda_kw'].shift(1).rolling(24, min_periods=1).mean()
 
-        # Remove nulos iniciais e define índice de divisão temporal
+        # Remove nulos iniciais gerados pelos deslocamentos e define índice de divisão temporal
         d = d.dropna().reset_index(drop=True)
         split_idx = int(len(d) * train_ratio)
 

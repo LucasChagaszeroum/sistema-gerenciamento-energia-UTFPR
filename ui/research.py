@@ -22,7 +22,6 @@ def calcular_pinball_loss(
 ) -> float:
     """Calcula a perda Pinball para avaliação metrológica de quantis (ex: P5, P95)."""
     erro = y_true - y_pred
-    # Retorna o erro ponderado pelo quantil desejado
     return float(np.mean(np.maximum(alpha * erro, (alpha - 1) * erro)))
 
 
@@ -47,7 +46,7 @@ def render_research_ui(db: DatabaseManager):
         ],
     )
 
-    # Preditores das séries temporais de carga elétrica
+    # Preditores das séries temporais de carga elétrica (incluindo volatilidade_6h)
     cols_x = [
         "lag_24",
         "lag_72",
@@ -57,6 +56,7 @@ def render_research_ui(db: DatabaseManager):
         "rolling_std_24",
         "rolling_std_168",
         "ewma_24",
+        "volatilidade_6h",  # ADICIONADO: Captura oscilações de pico para ajuste do PICP
         "interacao_temp_hora",
         "sin_hora",
         "cos_hora",
@@ -158,12 +158,29 @@ def render_research_ui(db: DatabaseManager):
             X_tr, X_te = X[:split_idx], X[split_idx:]
             y_tr, y_te = y[:split_idx], y[split_idx:]
 
-            # Regressores para os quantis P5 (limite inferior) e P95 (limite superior)
+            # ADICIONADO: Hiperparâmetros calibrados para expandir a cobertura empírica (PICP)
             m_p5 = lgb.LGBMRegressor(
-                objective="quantile", alpha=0.05, random_state=42, verbose=-1
+                objective="quantile",
+                alpha=0.05,
+                n_estimators=100,
+                learning_rate=0.03,
+                num_leaves=31,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=42,
+                verbose=-1,
             ).fit(X_tr, y_tr)
+
             m_p95 = lgb.LGBMRegressor(
-                objective="quantile", alpha=0.95, random_state=42, verbose=-1
+                objective="quantile",
+                alpha=0.95,
+                n_estimators=100,
+                learning_rate=0.03,
+                num_leaves=31,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=42,
+                verbose=-1,
             ).fit(X_tr, y_tr)
 
             p5 = m_p5.predict(X_te)
@@ -179,14 +196,12 @@ def render_research_ui(db: DatabaseManager):
             c3.metric("Cobertura de Intervalo (PICP)", f"{picp:.2f}%")
 
             # --- CONSTRUÇÃO DO GRÁFICO INTERATIVO DE BANDA DE INCERTEZA ---
-            
-            # Limita a amostragem visual a 168 horas para manter a legibilidade
             n_amostras = min(168, len(y_te))
             eixo_x = list(range(n_amostras))
 
             fig_quantis = go.Figure()
 
-            # Adiciona a linha do quantil superior P95
+            # Quantil superior P95
             fig_quantis.add_trace(
                 go.Scatter(
                     x=eixo_x,
@@ -198,7 +213,7 @@ def render_research_ui(db: DatabaseManager):
                 )
             )
 
-            # Preenche o espaço até o quantil inferior P5 (área semitransparente)
+            # Preenchimento de faixa entre P5 e P95
             fig_quantis.add_trace(
                 go.Scatter(
                     x=eixo_x,
@@ -211,7 +226,7 @@ def render_research_ui(db: DatabaseManager):
                 )
             )
 
-            # Plota a curva real de demanda elétrica medida
+            # Demanda real
             fig_quantis.add_trace(
                 go.Scatter(
                     x=eixo_x,
@@ -222,7 +237,6 @@ def render_research_ui(db: DatabaseManager):
                 )
             )
 
-            # Configurações de layout (corrigido: orientation="h")
             fig_quantis.update_layout(
                 title=f"Banda de Incerteza Probabilística (Janela de {n_amostras} Horas)",
                 xaxis_title="Horas do Conjunto de Teste",
