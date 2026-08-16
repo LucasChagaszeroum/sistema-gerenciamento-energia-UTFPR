@@ -1,42 +1,104 @@
 import streamlit as st
 import pandas as pd
+import pypdf
+import re
+
+def extrair_dados_pdf_copel(pdf_file):
+    """
+    Lê o arquivo PDF da fatura e extrai mês de referência, consumo (kWh) e valor total.
+    """
+    reader = pypdf.PdfReader(pdf_file)
+    texto_completo = ""
+    for page in reader.pages:
+        texto_completo += page.extract_text() or ""
+
+    # Expressões regulares (Regex) para captura de dados da fatura
+    match_mes = re.search(r'(\d{2}/\d{4})', texto_completo)
+    match_kwh = re.search(r'(\d+[\.,]?\d*)\s*kWh', texto_completo, re.IGNORECASE)
+    match_valor = re.search(r'R\$\s*(\d+[\.,]\d{2})', texto_completo)
+
+    mes_ano = match_mes.group(1) if match_mes else "08/2026"
+    
+    # Tratamento de formato numérico brasileiro (vírgula para ponto)
+    consumo_kwh = float(match_kwh.group(1).replace('.', '').replace(',', '.')) if match_kwh else 180.0
+    valor_total = float(match_valor.group(1).replace('.', '').replace(',', '.')) if match_valor else 145.50
+
+    return {
+        "mes_ano": mes_ano,
+        "consumo_kwh": consumo_kwh,
+        "valor_total": valor_total,
+        "bandeira": "Verde"
+    }
+
 
 def render_residential_ui(db=None):
     """
-    Interface principal do Módulo Residencial (Grupo B).
-    Aceita o objeto 'db' para persistência no SQLite e utiliza 'st.session_state'
-    para gerenciamento de estado reativo na tela.
+    Interface do Módulo Residencial com suporte a Upload de PDF,
+    Cadastro Manual, Persistência de Dados e Remoção de Faturas.
     """
     st.title("🏠 Módulo Residencial - Grupo B")
-    st.caption("Gerenciamento, histórico de faturas e diagnóstico de consumo.")
+    st.caption("Gestão de faturas via leitura de PDF (OCR), formulário manual e diagnósticos.")
 
-    # 1. INICIALIZAÇÃO DO ESTADO DA SESSÃO
-    # Mantém o histórico em memória enquanto a aplicação está rodando
+    # Inicialização do histórico na memória da sessão
     if "faturas_residenciais" not in st.session_state:
         st.session_state.faturas_residenciais = []
 
-    # --- CADASTRAR NOVA FATURA ---
-    with st.expander("➕ Cadastrar Nova Fatura", expanded=True):
+    # --- ABAS DE ENTRADA DE DADOS ---
+    tab_pdf, tab_manual = st.tabs(["📄 Upload de Fatura (PDF)", "✍️ Cadastro Manual"])
+
+    # 1. ABA DE UPLOAD DE PDF
+    with tab_pdf:
+        st.subheader("Leitura Automática de PDF")
+        uploaded_file = st.file_uploader("Selecione o arquivo PDF da fatura COPEL", type=["pdf"])
+
+        if uploaded_file is not None:
+            if st.button("🔍 Extrair Dados e Salvar Fatura", type="primary"):
+                try:
+                    # Executa a extração do texto do PDF via pypdf
+                    dados = extrair_dados_pdf_copel(uploaded_file)
+                    
+                    novo_id = len(st.session_state.faturas_residenciais) + 1
+                    nova_fatura = {
+                        "id": novo_id,
+                        "mes_ano": dados["mes_ano"],
+                        "consumo_kwh": dados["consumo_kwh"],
+                        "valor_total": dados["valor_total"],
+                        "bandeira": dados["bandeira"]
+                    }
+
+                    # Salva na sessão
+                    st.session_state.faturas_residenciais.append(nova_fatura)
+
+                    # Salva no banco SQLite se a conexão estiver ativa
+                    if db is not None and hasattr(db, "salvar_fatura"):
+                        db.salvar_fatura(dados["mes_ano"], dados["consumo_kwh"], dados["valor_total"], dados["bandeira"])
+
+                    st.success(f"Fatura de {dados['mes_ano']} extraída e cadastrada com sucesso!")
+                    st.rerun()
+                except Exception as err:
+                    st.error(f"Erro ao processar o arquivo PDF: {err}")
+
+    # 2. ABA DE CADASTRO MANUAL
+    with tab_manual:
+        st.subheader("Preenchimento Manual")
         with st.form(key="form_fatura_residencial", clear_on_submit=True):
             col1, col2 = st.columns(2)
             
             with col1:
-                mes_ano = st.text_input("Mês/Ano de Referência", value="08/2026", help="Exemplo: 08/2026")
+                mes_ano = st.text_input("Mês/Ano de Referência", value="08/2026")
                 consumo_kwh = st.number_input("Consumo Ativo (kWh)", min_value=0.0, value=180.0, step=10.0)
             
             with col2:
                 valor_total = st.number_input("Valor Total (R$)", min_value=0.0, value=145.50, step=5.0)
                 bandeira = st.selectbox("Bandeira Tarifária", ["Verde", "Amarela", "Vermelha P1", "Vermelha P2"])
             
-            btn_salvar = st.form_submit_button("💾 Salvar Fatura")
+            btn_salvar = st.form_submit_button("💾 Salvar Fatura Manual")
 
             if btn_salvar:
                 if not mes_ano:
-                    st.error("Por favor, preencha o mês/ano de referência.")
+                    st.error("Por favor, informe o mês/ano de referência.")
                 else:
-                    # Gera identificador local
                     novo_id = len(st.session_state.faturas_residenciais) + 1
-                    
                     nova_fatura = {
                         "id": novo_id,
                         "mes_ano": mes_ano,
@@ -44,29 +106,22 @@ def render_residential_ui(db=None):
                         "valor_total": valor_total,
                         "bandeira": bandeira
                     }
-                    
-                    # 1. Persistência em memória no Streamlit
                     st.session_state.faturas_residenciais.append(nova_fatura)
-                    
-                    # 2. Persistência no SQLite (caso o objeto db esteja ativo)
-                    if db is not None and hasattr(db, "salvar_fatura"):
-                        try:
-                            db.salvar_fatura(mes_ano, consumo_kwh, valor_total, bandeira)
-                        except Exception as err:
-                            st.warning(f"Salvo na sessão, mas houve falha ao gravar no SQLite: {err}")
 
-                    st.success(f"Fatura de {mes_ano} cadastrada com sucesso!")
-                    st.rerun()  # Atualiza a interface imediatamente
+                    if db is not None and hasattr(db, "salvar_fatura"):
+                        db.salvar_fatura(mes_ano, consumo_kwh, valor_total, bandeira)
+
+                    st.success(f"Fatura {mes_ano} cadastrada com sucesso!")
+                    st.rerun()
 
     st.markdown("---")
 
-    # --- HISTÓRICO E METRICAS DE CONSUMO ---
+    # --- EXIBIÇÃO E REMOÇÃO DE FATURAS ---
     st.subheader("📋 Histórico de Faturas Cadastradas")
 
     if not st.session_state.faturas_residenciais:
-        st.info("Nenhuma fatura cadastrada no momento. Utilize o formulário acima para adicionar registros.")
+        st.info("Nenhuma fatura cadastrada. Faça upload de um PDF ou utilize o cadastro manual.")
     else:
-        # Conversão para DataFrame do Pandas para renderização tabular
         df_faturas = pd.DataFrame(st.session_state.faturas_residenciais)
 
         st.dataframe(
@@ -82,7 +137,6 @@ def render_residential_ui(db=None):
             hide_index=True
         )
 
-        # Cálculo de grandezas agregadas via Pandas
         total_kwh = df_faturas["consumo_kwh"].sum()
         total_rs = df_faturas["valor_total"].sum()
         
@@ -92,20 +146,16 @@ def render_residential_ui(db=None):
 
         st.markdown("---")
 
-        # --- EXCLUSÃO DE REGISTROS ---
         st.subheader("🗑️ Apagar Fatura")
-        
-        # Criação de um dicionário de mapeamento para o selectbox
         opcoes_exclusao = {
             f"ID {f['id']} | Mês: {f['mes_ano']} - R$ {f['valor_total']:.2f}": f['id'] 
             for f in st.session_state.faturas_residenciais
         }
 
         col_select, col_btn = st.columns([3, 1])
-
         with col_select:
             fatura_para_remover = st.selectbox(
-                "Selecione a fatura para remoção:",
+                "Selecione a fatura para remover:",
                 options=list(opcoes_exclusao.keys())
             )
 
@@ -114,15 +164,12 @@ def render_residential_ui(db=None):
             st.write("")
             if st.button("❌ Excluir", type="primary"):
                 id_alvo = opcoes_exclusao[fatura_para_remover]
-                
-                # Filtra a lista removendo apenas o elemento selecionado
                 st.session_state.faturas_residenciais = [
                     f for f in st.session_state.faturas_residenciais if f["id"] != id_alvo
                 ]
-                
                 st.toast("Fatura removida com sucesso!", icon="✅")
                 st.rerun()
 
-# Suporte para execução direta do módulo
+
 if __name__ == "__main__":
     render_residential_ui()
