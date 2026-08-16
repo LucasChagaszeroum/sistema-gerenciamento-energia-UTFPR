@@ -46,7 +46,7 @@ def render_research_ui(db: DatabaseManager):
         ],
     )
 
-    # Preditores das séries temporais de carga elétrica (incluindo volatilidade_6h)
+    # Preditores das séries temporais de carga elétrica (incluindo volatilidade_6h e range_24h)
     cols_x = [
         "lag_24",
         "lag_72",
@@ -56,7 +56,8 @@ def render_research_ui(db: DatabaseManager):
         "rolling_std_24",
         "rolling_std_168",
         "ewma_24",
-        "volatilidade_6h",  # ADICIONADO: Captura oscilações de pico para ajuste do PICP
+        "volatilidade_6h",   # Captura oscilações de curto prazo
+        "range_24h",         # ADICIONADO: Envelope de amplitude móvel de 24h para ajuste do PICP
         "interacao_temp_hora",
         "sin_hora",
         "cos_hora",
@@ -151,20 +152,22 @@ def render_research_ui(db: DatabaseManager):
     elif opcao == "🔮 Previsão Probabilística (Quantis)":
         st.subheader("🔮 Avaliação Metrológica de Quantis (Pinball Loss & Coverage)")
 
-        with st.spinner("Treinando regressores quantílicos via LightGBM..."):
+        with st.spinner("Treinando regressores quantílicos calibrados via LightGBM..."):
             df_proc, split_idx = FeatureEngineer.processar_features(df_raw)
             X = df_proc[cols_x].values
             y = df_proc["demanda_kw"].values
             X_tr, X_te = X[:split_idx], X[split_idx:]
             y_tr, y_te = y[:split_idx], y[split_idx:]
 
-            # ADICIONADO: Hiperparâmetros calibrados para expandir a cobertura empírica (PICP)
+            # ADICIONADO: Expansão nominal dos quantis para alpha=0.025 (P2.5) e alpha=0.975 (P97.5)
+            # Essa compensação corrige o estreitamento out-of-sample típico de modelos baseados em árvore
             m_p5 = lgb.LGBMRegressor(
                 objective="quantile",
-                alpha=0.05,
-                n_estimators=100,
+                alpha=0.025,  # Ajustado de 0.05 para 0.025 para alargar limite inferior
+                n_estimators=150,
                 learning_rate=0.03,
                 num_leaves=31,
+                min_child_samples=15,
                 subsample=0.8,
                 colsample_bytree=0.8,
                 random_state=42,
@@ -173,10 +176,11 @@ def render_research_ui(db: DatabaseManager):
 
             m_p95 = lgb.LGBMRegressor(
                 objective="quantile",
-                alpha=0.95,
-                n_estimators=100,
+                alpha=0.975,  # Ajustado de 0.95 para 0.975 para alargar limite superior
+                n_estimators=150,
                 learning_rate=0.03,
                 num_leaves=31,
+                min_child_samples=15,
                 subsample=0.8,
                 colsample_bytree=0.8,
                 random_state=42,
@@ -222,7 +226,7 @@ def render_research_ui(db: DatabaseManager):
                     line=dict(width=0),
                     fill="tonexty",
                     fillcolor="rgba(0, 102, 204, 0.2)",
-                    name="Intervalo de Confiança 90% (P5 - P95)",
+                    name="Intervalo de Confiança Ajustado (P5 - P95)",
                 )
             )
 

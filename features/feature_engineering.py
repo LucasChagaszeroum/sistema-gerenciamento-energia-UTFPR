@@ -23,8 +23,13 @@ class FeatureEngineer:
         d['rolling_std_168'] = d['demanda_kw'].shift(1).rolling(168).std()
         d['ewma_24'] = d['demanda_kw'].shift(1).ewm(span=24).mean()
 
-        # ADICIONADO: Volatilidade instantânea de curto prazo (últimas 6 horas) com shift(1)
+        # Volatilidade instantânea de curto prazo (últimas 6 horas)
         d['volatilidade_6h'] = d['demanda_kw'].shift(1).rolling(6).std()
+
+        # ADICIONADO: Amplitude móvel de 24h (Max - Min) para capturar a dispersão diária
+        rolling_max_24 = d['demanda_kw'].shift(1).rolling(24).max()
+        rolling_min_24 = d['demanda_kw'].shift(1).rolling(24).min()
+        d['range_24h'] = rolling_max_24 - rolling_min_24
 
         # Atributos cíclicos e interações térmicas
         d['interacao_temp_hora'] = d['temperatura'] * d['data_hora'].dt.hour
