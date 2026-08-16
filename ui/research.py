@@ -2,7 +2,7 @@ import lightgbm as lgb
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go  # Adicionado para gráficos interativos de bandas de incerteza
+import plotly.graph_objects as go
 import shap
 import streamlit as st
 import xgboost as xgb
@@ -178,16 +178,15 @@ def render_research_ui(db: DatabaseManager):
             c2.metric("Pinball Loss (P95)", f"{loss_p95:.4f}")
             c3.metric("Cobertura de Intervalo (PICP)", f"{picp:.2f}%")
 
-            # --- ADIÇÕES DE VISUALIZAÇÃO E DIAGNÓSTICO METROLÓGICO ---
+            # --- CONSTRUÇÃO DO GRÁFICO INTERATIVO DE BANDA DE INCERTEZA ---
             
-            # Recorte visual das primeiras 168 horas (1 semana de teste)
+            # Limita a amostragem visual a 168 horas para manter a legibilidade
             n_amostras = min(168, len(y_te))
             eixo_x = list(range(n_amostras))
 
-            # Construção do gráfico de intervalo de predição com Plotly
             fig_quantis = go.Figure()
 
-            # Adiciona o limite superior (P95)
+            # Adiciona a linha do quantil superior P95
             fig_quantis.add_trace(
                 go.Scatter(
                     x=eixo_x,
@@ -199,7 +198,7 @@ def render_research_ui(db: DatabaseManager):
                 )
             )
 
-            # Preenche a área até o limite inferior (P5) criando a faixa de incerteza
+            # Preenche o espaço até o quantil inferior P5 (área semitransparente)
             fig_quantis.add_trace(
                 go.Scatter(
                     x=eixo_x,
@@ -212,7 +211,7 @@ def render_research_ui(db: DatabaseManager):
                 )
             )
 
-            # Plota a curva real da demanda medida
+            # Plota a curva real de demanda elétrica medida
             fig_quantis.add_trace(
                 go.Scatter(
                     x=eixo_x,
@@ -223,18 +222,19 @@ def render_research_ui(db: DatabaseManager):
                 )
             )
 
+            # Configurações de layout (corrigido: orientation="h")
             fig_quantis.update_layout(
                 title=f"Banda de Incerteza Probabilística (Janela de {n_amostras} Horas)",
                 xaxis_title="Horas do Conjunto de Teste",
                 yaxis_title="Demanda de Carga (kW)",
                 hovermode="x unified",
-                legend=dict(orient="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 margin=dict(l=20, r=20, t=50, b=20),
             )
 
             st.plotly_chart(fig_quantis, use_container_width=True)
 
-            # Diagnóstico estatístico automatizado para o relatório da IC
+            # Diagnóstico estatístico automatizado
             st.markdown("---")
             st.markdown("### 📝 Parecer Metrológico do Modelo Quantílico")
             if picp < 85.0:
@@ -286,7 +286,7 @@ def render_research_ui(db: DatabaseManager):
                 elif "values" in pdp_results:
                     grid_vals = pdp_results["values"][0]
                 else:
-                    grid_vals = pdp_results[1][0]  # Retorno estilo tupla em versões antigas
+                    grid_vals = pdp_results[1][0]
 
                 avg_preds = pdp_results["average"][0] if "average" in pdp_results else pdp_results[0][0]
 
